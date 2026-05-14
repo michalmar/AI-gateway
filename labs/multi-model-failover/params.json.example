@@ -80,8 +80,8 @@
                     "version": "2025-12-11",
                     "sku": "GlobalStandard",
                     "capacity": 200,
-                    "inputTokensMeterSku": "gpt 5.2 Inp glbl",
-                    "outputTokensMeterSku": "gpt 5.2 Outp glbl"
+                    "inputTokensMeterSku": "gpt 5 pro inp glbl",
+                    "outputTokensMeterSku": "gpt 5 pro out glbl"
                 },
                 {
                     "name": "gpt-5.2",
@@ -90,8 +90,8 @@
                     "version": "2025-12-11",
                     "sku": "GlobalStandard",
                     "capacity": 200,
-                    "inputTokensMeterSku": "gpt 5.2 Inp glbl",
-                    "outputTokensMeterSku": "gpt 5.2 Outp glbl"
+                    "inputTokensMeterSku": "gpt 5 pro inp glbl",
+                    "outputTokensMeterSku": "gpt 5 pro out glbl"
                 },
                 {
                     "name": "gpt-4.1",

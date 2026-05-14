@@ -22,6 +22,8 @@ authors:
 
 [![flow](../../images/backend-pool-load-balancing.gif)](multi-model-failover.ipynb)
 
+Start with [FIRST_RUN.md](FIRST_RUN.md) for the end-to-end first deployment flow: Azure prerequisites, APIM preparation, deployment, FinOps table population, load testing, and verification.
+
 This lab demonstrates how to implement automatic failover between different AI models when the primary model is unavailable or throttled. It combines multiple APIM patterns into a production-ready architecture:
 
 - **Priority-based routing** with a backend pool across three AI models (gpt-4.1-nano → gpt-5.2 → gpt-4.1)
@@ -121,6 +123,19 @@ az deployment group create \
 ```
 
 For PTU/PayGo spillover, use identical model deployment names on both Foundry accounts. Configure the PTU Foundry with `priority: 1` and the PayGo Foundry with `priority: 2`.
+
+FinOps uses two Log Analytics custom tables:
+
+| Table | Purpose | Populated by |
+|-------|---------|--------------|
+| `PRICING_CL` | Model input/output token prices from Azure Retail Prices | `multi-deploy.py`; `multi-model-test-query.py` backfills if empty |
+| `SUBSCRIPTION_QUOTA_CL` | APIM subscription cost quotas from `apimProductsConfig[*].costQuota` | `multi-deploy.py`; `multi-model-test-query.py` backfills if empty |
+
+Direct `az deployment group create` creates the tables and Data Collection Rules, but it cannot upload custom log rows. If you deploy directly with Bicep, run the telemetry query once to seed missing FinOps rows:
+
+```bash
+python3.12 multi-model-test-query.py --resource-group <resource-group> --deployment-name multi-model-failover
+```
 
 ### Resource naming
 

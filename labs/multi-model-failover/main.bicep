@@ -80,8 +80,8 @@ param modelsConfig array = [
     version: '2025-12-11'
     sku: 'GlobalStandard'
     capacity: 200
-    inputTokensMeterSku: 'gpt 5.2 Inp glbl'
-    outputTokensMeterSku: 'gpt 5.2 Outp glbl'
+    inputTokensMeterSku: 'gpt 5 pro inp glbl'
+    outputTokensMeterSku: 'gpt 5 pro out glbl'
   }
   {
     name: 'gpt-5.2'
@@ -90,8 +90,8 @@ param modelsConfig array = [
     version: '2025-12-11'
     sku: 'GlobalStandard'
     capacity: 200
-    inputTokensMeterSku: 'gpt 5.2 Inp glbl'
-    outputTokensMeterSku: 'gpt 5.2 Outp glbl'
+    inputTokensMeterSku: 'gpt 5 pro inp glbl'
+    outputTokensMeterSku: 'gpt 5 pro out glbl'
   }
   {
     name: 'gpt-4.1'
@@ -273,6 +273,7 @@ resource apimDiagnosticSettings 'Microsoft.Insights/diagnosticSettings@2021-05-0
   scope: apim
   properties: {
     workspaceId: lawModule.outputs.id
+    logAnalyticsDestinationType: 'Dedicated'
     logs: [
       {
         categoryGroup: 'AllLogs'
@@ -758,7 +759,7 @@ resource ruleSuspendSub 'microsoft.insights/scheduledqueryrules@2025-01-01-previ
     criteria: {
       allOf: [
         {
-          query: 'let llmHeaderLogs = ApiManagementGatewayLlmLog\n    | where TimeGenerated >= startofmonth(now()) and TimeGenerated <= endofmonth(now())\n    | where DeploymentName != \'\';\nlet llmLogsWithSubscriptionId = llmHeaderLogs\n    | join kind=leftouter ApiManagementGatewayLogs on CorrelationId\n    | project\n        SubscriptionName = ApimSubscriptionId,\n        DeploymentName,\n        PromptTokens,\n        CompletionTokens,\n        TotalTokens;\nllmLogsWithSubscriptionId\n| join kind=inner (\n    PRICING_CL\n    | summarize arg_max(TimeGenerated, *) by Model\n    | project Model, InputTokensPrice, OutputTokensPrice\n    )\n    on $left.DeploymentName == $right.Model\n| extend InputCost = PromptTokens * InputTokensPrice\n| extend OutputCost = CompletionTokens * OutputTokensPrice\n| summarize\n    InputCost = sum(InputCost),\n    OutputCost = sum(OutputCost)\n    by SubscriptionName\n| extend TotalCost = (InputCost + OutputCost) / 1000\n| join kind=inner (\n    SUBSCRIPTION_QUOTA_CL\n    | summarize arg_max(TimeGenerated, *) by Subscription\n    | project Subscription, CostQuota\n    )\n    on $left.SubscriptionName == $right.Subscription\n| project SubscriptionName, CostQuota, TotalCost\n| where TotalCost > CostQuota\n'
+          query: 'let llmHeaderLogs = ApiManagementGatewayLlmLog\n    | where TimeGenerated >= startofmonth(now()) and TimeGenerated <= endofmonth(now())\n    | where DeploymentName != \'\';\nlet llmLogsWithSubscriptionId = llmHeaderLogs\n    | join kind=leftouter ApiManagementGatewayLogs on CorrelationId\n    | project\n        SubscriptionName = ApimSubscriptionId,\n        DeploymentName,\n        PromptTokens,\n        CompletionTokens,\n        TotalTokens;\nllmLogsWithSubscriptionId\n| join kind=inner (\n    PRICING_CL\n    | summarize arg_max(TimeGenerated, *) by Model\n    | project Model, InputTokensPrice, OutputTokensPrice\n    )\n    on $left.DeploymentName == $right.Model\n| extend InputCost = PromptTokens * InputTokensPrice\n| extend OutputCost = CompletionTokens * OutputTokensPrice\n| summarize\n    InputCost = sum(InputCost),\n    OutputCost = sum(OutputCost)\n    by SubscriptionName\n| extend TotalCost = (InputCost + OutputCost) / 1000000.0\n| join kind=inner (\n    SUBSCRIPTION_QUOTA_CL\n    | summarize arg_max(TimeGenerated, *) by Subscription\n    | project Subscription, CostQuota\n    )\n    on $left.SubscriptionName == $right.Subscription\n| project SubscriptionName, CostQuota, TotalCost\n| where TotalCost > CostQuota\n'
           timeAggregation: 'Count'
           dimensions: [
             {
@@ -815,7 +816,7 @@ resource ruleActivateSub 'microsoft.insights/scheduledqueryrules@2025-01-01-prev
     criteria: {
       allOf: [
         {
-          query: 'let llmHeaderLogs = ApiManagementGatewayLlmLog\n    | where TimeGenerated >= startofmonth(now()) and TimeGenerated <= endofmonth(now())\n    | where DeploymentName != \'\';\nlet llmLogsWithSubscriptionId = llmHeaderLogs\n    | join kind=leftouter ApiManagementGatewayLogs on CorrelationId\n    | project\n        SubscriptionName = ApimSubscriptionId,\n        DeploymentName,\n        PromptTokens,\n        CompletionTokens,\n        TotalTokens;\nllmLogsWithSubscriptionId\n| join kind=inner (\n    PRICING_CL\n    | summarize arg_max(TimeGenerated, *) by Model\n    | project Model, InputTokensPrice, OutputTokensPrice\n    )\n    on $left.DeploymentName == $right.Model\n| extend InputCost = PromptTokens * InputTokensPrice\n| extend OutputCost = CompletionTokens * OutputTokensPrice\n| summarize\n    InputCost = sum(InputCost),\n    OutputCost = sum(OutputCost)\n    by SubscriptionName\n| extend TotalCost = (InputCost + OutputCost) / 1000\n| join kind=inner (\n    SUBSCRIPTION_QUOTA_CL\n    | summarize arg_max(TimeGenerated, *) by Subscription\n    | project Subscription, CostQuota\n    )\n    on $left.SubscriptionName == $right.Subscription\n| project SubscriptionName, CostQuota, TotalCost\n| where TotalCost <= CostQuota\n'
+          query: 'let llmHeaderLogs = ApiManagementGatewayLlmLog\n    | where TimeGenerated >= startofmonth(now()) and TimeGenerated <= endofmonth(now())\n    | where DeploymentName != \'\';\nlet llmLogsWithSubscriptionId = llmHeaderLogs\n    | join kind=leftouter ApiManagementGatewayLogs on CorrelationId\n    | project\n        SubscriptionName = ApimSubscriptionId,\n        DeploymentName,\n        PromptTokens,\n        CompletionTokens,\n        TotalTokens;\nllmLogsWithSubscriptionId\n| join kind=inner (\n    PRICING_CL\n    | summarize arg_max(TimeGenerated, *) by Model\n    | project Model, InputTokensPrice, OutputTokensPrice\n    )\n    on $left.DeploymentName == $right.Model\n| extend InputCost = PromptTokens * InputTokensPrice\n| extend OutputCost = CompletionTokens * OutputTokensPrice\n| summarize\n    InputCost = sum(InputCost),\n    OutputCost = sum(OutputCost)\n    by SubscriptionName\n| extend TotalCost = (InputCost + OutputCost) / 1000000.0\n| join kind=inner (\n    SUBSCRIPTION_QUOTA_CL\n    | summarize arg_max(TimeGenerated, *) by Subscription\n    | project Subscription, CostQuota\n    )\n    on $left.SubscriptionName == $right.Subscription\n| project SubscriptionName, CostQuota, TotalCost\n| where TotalCost <= CostQuota\n'
           timeAggregation: 'Count'
           dimensions: [
             {
@@ -860,6 +861,8 @@ output logAnalyticsWorkspaceId string = lawModule.outputs.customerId
 output apimServiceId string = apim.id
 output apimResourceGatewayURL string = apim.properties.gatewayUrl
 output appInsightsName string = appInsightsModule.outputs.name
+output pricingTableName string = pricingTable.name
+output subscriptionQuotaTableName string = subscriptionQuotaTable.name
 
 #disable-next-line outputs-should-not-contain-secrets
 output apimSubscriptions array = [for (subscription, i) in apimSubscriptionsConfig: {

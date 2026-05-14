@@ -10,7 +10,8 @@ resource cognitiveService 'Microsoft.CognitiveServices/accounts@2026-03-15-previ
 }
 
 @batchSize(1)
-resource modelDeployment 'Microsoft.CognitiveServices/accounts/deployments@2026-03-15-preview' = [for (model, i) in modelsConfig: if(model.?aiservice == null || contains(cognitiveService.name, model.?aiservice)) {
+// The parent Foundry module pre-filters models for the target account.
+resource modelDeployment 'Microsoft.CognitiveServices/accounts/deployments@2026-03-01' = [for model in modelsConfig: {
   name: model.name
   parent: cognitiveService
   sku: {

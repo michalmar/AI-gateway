@@ -34,6 +34,9 @@
 
 # %%
 import os, sys, json
+import urllib.parse
+import urllib.request
+from datetime import datetime, timezone
 if sys.version_info < (3, 12):
     raise SystemExit("Python 3.12 or later is required. Run: python3.12 multi-deploy.py")
 
@@ -74,6 +77,146 @@ def ensure_deployment_has_outputs(output, deployment_name, resource_group_name):
         sys.exit(1)
 
 
+def get_output_value(output, output_property):
+    return output.json_data['properties']['outputs'][output_property]['value']
+
+
+def fetch_retail_prices(location, currency_code):
+    filter_expression = (
+        "serviceName eq 'Foundry Models' "
+        "and unitOfMeasure eq '1K' "
+        f"and armRegionName eq '{location}'"
+    )
+    url = "https://prices.azure.com/api/retail/prices?" + urllib.parse.urlencode({
+        "currencyCode": currency_code,
+        "$filter": filter_expression,
+    })
+    items = []
+
+    while url:
+        with urllib.request.urlopen(url, timeout=30) as response:
+            data = json.load(response)
+        items.extend(data.get("Items", []))
+        url = data.get("NextPageLink")
+
+    return items
+
+
+def find_retail_price(items, sku_name):
+    match = next((item for item in items if item.get("skuName") == sku_name), None)
+    return None if match is None else match.get("retailPrice")
+
+
+def upload_custom_logs(endpoint, rule_id, stream_name, records, table_name):
+    try:
+        from azure.identity import DefaultAzureCredential
+        from azure.monitor.ingestion import LogsIngestionClient
+        from azure.core.exceptions import HttpResponseError
+    except ModuleNotFoundError as exc:
+        utils.print_error(
+            f"Cannot populate {table_name} because dependency '{exc.name}' is missing. "
+            "Install lab dependencies with: pip install -r ../../requirements.txt"
+        )
+        return False
+
+    client = LogsIngestionClient(
+        endpoint=endpoint,
+        credential=DefaultAzureCredential(),
+        logging_enable=False,
+    )
+    try:
+        client.upload(rule_id=rule_id, stream_name=stream_name, logs=records)
+        utils.print_ok(f"Uploaded {len(records)} records to {table_name}")
+        return True
+    except HttpResponseError as exc:
+        utils.print_error(f"{table_name} upload failed: {exc}")
+        return False
+
+
+def build_pricing_records(aiservices_config, models_config, currency_code):
+    service_locations = {service.get("name"): service.get("location") for service in aiservices_config}
+    default_location = next((service.get("location") for service in aiservices_config if service.get("location")), None)
+    prices_by_location = {}
+    records_by_model = {}
+
+    for deployment in models_config:
+        model_name = deployment.get("name")
+        if not model_name or model_name in records_by_model:
+            continue
+
+        location = service_locations.get(deployment.get("aiservice")) or default_location
+        if not location:
+            utils.print_error(f"Cannot determine Azure region for model '{model_name}'.")
+            continue
+
+        if location not in prices_by_location:
+            prices_by_location[location] = fetch_retail_prices(location, currency_code)
+
+        input_price = find_retail_price(prices_by_location[location], deployment.get("inputTokensMeterSku"))
+        output_price = find_retail_price(prices_by_location[location], deployment.get("outputTokensMeterSku"))
+        if input_price is None or output_price is None:
+            utils.print_error(
+                f"Could not find retail prices for model '{model_name}' in '{location}' "
+                f"({deployment.get('inputTokensMeterSku')} / {deployment.get('outputTokensMeterSku')})."
+            )
+            continue
+
+        records_by_model[model_name] = {
+            "TimeGenerated": datetime.now(timezone.utc).isoformat(),
+            "Model": model_name,
+            # Store per-million token prices. Cost queries divide by 1,000,000.
+            "InputTokensPrice": input_price * 1000,
+            "OutputTokensPrice": output_price * 1000,
+        }
+
+    return list(records_by_model.values())
+
+
+def build_subscription_quota_records(apim_subscriptions_config, apim_products_config):
+    products_by_name = {product.get("name"): product for product in apim_products_config}
+    records = []
+
+    for subscription in apim_subscriptions_config:
+        product = products_by_name.get(subscription.get("product"))
+        if product is None:
+            utils.print_error(f"Could not find product quota for subscription '{subscription.get('name')}'.")
+            continue
+
+        records.append({
+            "TimeGenerated": datetime.now(timezone.utc).isoformat(),
+            "Subscription": subscription.get("name"),
+            "CostQuota": product.get("costQuota", 0),
+        })
+
+    return records
+
+
+def populate_finops_tables(output):
+    pricing_records = build_pricing_records(aiservices_config, models_config, currency_code)
+    if not pricing_records:
+        return False
+
+    quota_records = build_subscription_quota_records(apim_subscriptions_config, apim_products_config)
+    if not quota_records:
+        return False
+
+    pricing_uploaded = upload_custom_logs(
+        get_output_value(output, 'pricingDCREndpoint'),
+        get_output_value(output, 'pricingDCRImmutableId'),
+        get_output_value(output, 'pricingDCRStream'),
+        pricing_records,
+        'PRICING_CL',
+    )
+    quota_uploaded = upload_custom_logs(
+        get_output_value(output, 'subscriptionQuotaDCREndpoint'),
+        get_output_value(output, 'subscriptionQuotaDCRImmutableId'),
+        get_output_value(output, 'subscriptionQuotaDCRStream'),
+        quota_records,
+        'SUBSCRIPTION_QUOTA_CL',
+    )
+    return pricing_uploaded and quota_uploaded
+
+
 deployment_name = os.path.basename(os.path.dirname(os.path.abspath(__file__)))
 project_name = os.environ.get("PROJECT_NAME", "ict-apim")
 subproject_name = os.environ.get("SUBPROJECT_NAME", deployment_name)
@@ -84,11 +227,11 @@ tenant_name = os.environ.get("TENANT_NAME", "mpsvcrtest")
 
 
 
-resource_group_name = "rg-aig-mpsv" # f"rg-{project_name}-{subproject_name}-{resource_number}-{tenant_name}"
-resource_group_location = "westeurope"
+resource_group_name = os.environ.get("RESOURCE_GROUP_NAME") or os.environ.get("RESOURCE_GROUP") or f"rg-{project_name}-{subproject_name}-{resource_number}-{tenant_name}"
+resource_group_location = os.environ.get("RESOURCE_GROUP_LOCATION", "westeurope")
 
 # Existing APIM instance (must have system-assigned managed identity enabled)
-apim_name = os.environ.get("APIM_NAME", f"apim-aig-mpsv-test1")
+apim_name = os.environ.get("APIM_NAME", "")
 
 # AI Services - two Foundry accounts created by Bicep for failover diversity
 aiservices_config = [{"name": "foundry1", "location": "westeurope", "priority": 1, "resourceNumber": resource_number},
@@ -194,12 +337,16 @@ if (DEPLOY):
         apim_resource_gateway_url = utils.get_deployment_output(output, 'apimResourceGatewayURL', 'APIM API Gateway URL')
         app_insights_name = utils.get_deployment_output(output, 'appInsightsName', 'App Insights Name')
         foundry_project_endpoint = utils.get_deployment_output(output, 'foundryProjectEndpoint', 'Foundry Project Endpoint')
-        pricing_dcr_endpoint = utils.get_deployment_output(output, 'pricingDCREndpoint', 'Pricing DCR Endpoint')
-        pricing_dcr_immutable_id = utils.get_deployment_output(output, 'pricingDCRImmutableId', 'Pricing DCR ImmutableId')
-        pricing_dcr_stream = utils.get_deployment_output(output, 'pricingDCRStream', 'Pricing DCR Stream')
-        subscription_quota_dcr_endpoint = utils.get_deployment_output(output, 'subscriptionQuotaDCREndpoint', 'Subscription Quota DCR Endpoint')
-        subscription_quota_dcr_immutable_id = utils.get_deployment_output(output, 'subscriptionQuotaDCRImmutableId', 'Subscription Quota DCR ImmutableId')
-        subscription_quota_dcr_stream = utils.get_deployment_output(output, 'subscriptionQuotaDCRStream', 'Subscription Quota DCR Stream')
+        utils.get_deployment_output(output, 'pricingDCREndpoint', 'Pricing DCR Endpoint')
+        utils.get_deployment_output(output, 'pricingDCRImmutableId', 'Pricing DCR ImmutableId')
+        utils.get_deployment_output(output, 'pricingDCRStream', 'Pricing DCR Stream')
+        utils.get_deployment_output(output, 'subscriptionQuotaDCREndpoint', 'Subscription Quota DCR Endpoint')
+        utils.get_deployment_output(output, 'subscriptionQuotaDCRImmutableId', 'Subscription Quota DCR ImmutableId')
+        utils.get_deployment_output(output, 'subscriptionQuotaDCRStream', 'Subscription Quota DCR Stream')
+
+        if not populate_finops_tables(output):
+            utils.print_error("Failed to populate FinOps custom tables.")
+            sys.exit(1)
 
         apim_subscriptions = json.loads(utils.get_deployment_output(output, 'apimSubscriptions').replace("'", "\""))
         for subscription in apim_subscriptions:

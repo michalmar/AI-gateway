@@ -6,20 +6,62 @@
     "_generator": {
       "name": "bicep",
       "version": "0.35.1.17967",
-      "templateHash": "10349078270611089450"
+      "templateHash": "14637612978949421890"
     }
   },
   "parameters": {
+    "projectName": {
+      "type": "string",
+      "defaultValue": "ict-apim",
+      "metadata": {
+        "description": "Project segment used in resource names."
+      }
+    },
+    "subprojectName": {
+      "type": "string",
+      "defaultValue": "multi-model-failover",
+      "metadata": {
+        "description": "Subproject segment used in resource names."
+      }
+    },
+    "dcrSubprojectName": {
+      "type": "string",
+      "defaultValue": "mf",
+      "metadata": {
+        "description": "Short subproject segment used for Direct Data Collection Rules, which have a 30-character name limit."
+      }
+    },
+    "resourceNumber": {
+      "type": "string",
+      "defaultValue": "001",
+      "metadata": {
+        "description": "Primary three-digit instance number segment used in resource names."
+      }
+    },
+    "secondaryResourceNumber": {
+      "type": "string",
+      "defaultValue": "002",
+      "metadata": {
+        "description": "Secondary three-digit instance number segment used when two resources of the same type are created."
+      }
+    },
+    "tenantName": {
+      "type": "string",
+      "defaultValue": "mpsvcrtest",
+      "metadata": {
+        "description": "Tenant segment used in resource names."
+      }
+    },
     "apimName": {
       "type": "string",
-      "defaultValue": "[format('apim-{0}', uniqueString(subscription().id, resourceGroup().id))]",
+      "defaultValue": "[format('apim-{0}-{1}-{2}-{3}', parameters('projectName'), parameters('subprojectName'), parameters('resourceNumber'), parameters('tenantName'))]",
       "metadata": {
         "description": "Name of existing APIM instance (must have system-assigned managed identity enabled)"
       }
     },
     "lawName": {
       "type": "string",
-      "defaultValue": "[format('workspace-{0}', uniqueString(subscription().id, resourceGroup().id))]",
+      "defaultValue": "[format('log-{0}-{1}-{2}-{3}', parameters('projectName'), parameters('subprojectName'), parameters('resourceNumber'), parameters('tenantName'))]",
       "metadata": {
         "description": "Name of the Log Analytics Workspace to create"
       }
@@ -33,7 +75,7 @@
     },
     "appInsightsName": {
       "type": "string",
-      "defaultValue": "[format('insights-{0}', uniqueString(subscription().id, resourceGroup().id))]",
+      "defaultValue": "[format('appi-{0}-{1}-{2}-{3}', parameters('projectName'), parameters('subprojectName'), parameters('resourceNumber'), parameters('tenantName'))]",
       "metadata": {
         "description": "Name of the Application Insights instance to create"
       }
@@ -51,16 +93,18 @@
         {
           "name": "foundry1",
           "location": "swedencentral",
-          "priority": 1
+          "priority": 1,
+          "resourceNumber": "[parameters('resourceNumber')]"
         },
         {
           "name": "foundry2",
           "location": "eastus2",
-          "priority": 2
+          "priority": 2,
+          "resourceNumber": "[parameters('secondaryResourceNumber')]"
         }
       ],
       "metadata": {
-        "description": "AI Foundry accounts to create. Each entry: name (APIM backend id), location, priority. Optional: resourceName (Azure resource name, defaults to name-suffix)."
+        "description": "AI Foundry accounts to create. Each entry: name (APIM backend id), location, priority. Optional: resourceName (Azure resource name, defaults to the standard naming convention)."
       }
     },
     "modelsConfig": {
@@ -93,8 +137,8 @@
           "version": "2025-12-11",
           "sku": "GlobalStandard",
           "capacity": 200,
-          "inputTokensMeterSku": "gpt 5.2 Inp glbl",
-          "outputTokensMeterSku": "gpt 5.2 Outp glbl"
+          "inputTokensMeterSku": "gpt 5 pro inp glbl",
+          "outputTokensMeterSku": "gpt 5 pro out glbl"
         },
         {
           "name": "gpt-5.2",
@@ -103,8 +147,8 @@
           "version": "2025-12-11",
           "sku": "GlobalStandard",
           "capacity": 200,
-          "inputTokensMeterSku": "gpt 5.2 Inp glbl",
-          "outputTokensMeterSku": "gpt 5.2 Outp glbl"
+          "inputTokensMeterSku": "gpt 5 pro inp glbl",
+          "outputTokensMeterSku": "gpt 5 pro out glbl"
         },
         {
           "name": "gpt-4.1",
@@ -190,14 +234,20 @@
     },
     "foundryProjectName": {
       "type": "string",
-      "defaultValue": "multi-model-failover"
+      "defaultValue": "",
+      "metadata": {
+        "description": "Optional legacy prefix for AI Foundry project names. Leave empty to use the standard naming convention."
+      }
     }
   },
   "variables": {
     "$fxv#0": "<policies>\n    <inbound>\n        <base />\n        <set-backend-service backend-id=\"{backend-id}\" />\n        <azure-openai-emit-token-metric namespace=\"aiusage\">\n            <dimension name=\"Product\" value=\"@(context.Product.Id)\" />\n            <dimension name=\"Subscription ID\" />\n            <dimension name=\"Model\" value=\"@(context.Request.MatchedParameters.GetValueOrDefault(\"deployment-id\", \"unknown\"))\" />\n        </azure-openai-emit-token-metric>\n    </inbound>\n    <backend>\n        <!--Retry with exponential backoff on 429 (throttled) or 503 (unavailable). Count matches backends minus one to try all.-->\n        <retry count=\"2\" interval=\"1\" max-interval=\"10\" delta=\"2\" first-fast-retry=\"true\" condition=\"@(context.Response.StatusCode == 429 || context.Response.StatusCode == 503)\">\n            <set-backend-service backend-id=\"{backend-id}\" />\n            <forward-request buffer-request-body=\"true\" />\n        </retry>\n    </backend>\n    <outbound>\n        <base />\n    </outbound>\n    <on-error>\n        <base />\n        <choose>\n            <!--Return a generic error that does not reveal backend pool details.-->\n            <when condition=\"@(context.Response.StatusCode == 429)\">\n                <return-response>\n                    <set-status code=\"429\" reason=\"Too Many Requests\" />\n                    <set-header name=\"Retry-After\" exists-action=\"override\">\n                        <value>10</value>\n                    </set-header>\n                </return-response>\n            </when>\n            <when condition=\"@(context.Response.StatusCode == 503)\">\n                <return-response>\n                    <set-status code=\"503\" reason=\"Service Unavailable\" />\n                </return-response>\n            </when>\n        </choose>\n    </on-error>\n</policies>\n",
-    "$fxv#1": "{\n  \"version\": \"Notebook/1.0\",\n  \"items\": [\n    {\n      \"type\": 9,\n      \"content\": {\n        \"version\": \"KqlParameterItem/1.0\",\n        \"parameters\": [\n          {\n            \"id\": \"a1b2c3d4-e5f6-7890-abcd-ef1234567890\",\n            \"version\": \"KqlParameterItem/1.0\",\n            \"name\": \"TimeRange\",\n            \"label\": \"Time Range\",\n            \"type\": 4,\n            \"isRequired\": true,\n            \"typeSettings\": {\n              \"selectableValues\": [\n                { \"durationMs\": 3600000 },\n                { \"durationMs\": 14400000 },\n                { \"durationMs\": 43200000 },\n                { \"durationMs\": 86400000 },\n                { \"durationMs\": 604800000 },\n                { \"durationMs\": 2592000000 }\n              ],\n              \"allowCustom\": true\n            },\n            \"value\": {\n              \"durationMs\": 86400000\n            }\n          }\n        ],\n        \"style\": \"pills\",\n        \"queryType\": 0,\n        \"resourceType\": \"microsoft.operationalinsights/workspaces\"\n      },\n      \"name\": \"parameters - TimeRange\"\n    },\n    {\n      \"type\": 1,\n      \"content\": {\n        \"json\": \"## 💰 Cost Analysis\\r\\nCost tracking per department (APIM product subscription) compared against monthly quotas. Prices from PRICING_CL custom table (per 1M tokens).\"\n      },\n      \"name\": \"text - cost-header\"\n    },\n    {\n      \"type\": 3,\n      \"content\": {\n        \"version\": \"KqlItem/1.0\",\n        \"query\": \"let llmLogs = ApiManagementGatewayLlmLog\\r\\n| where TimeGenerated >= startofmonth(now()) and TimeGenerated <= endofmonth(now())\\r\\n| where DeploymentName != '';\\r\\nlet logsWithSub = llmLogs\\r\\n| join kind=leftouter (\\r\\n    ApiManagementGatewayLogs\\r\\n    | where TimeGenerated >= startofmonth(now())\\r\\n    | summarize ApimSubscriptionId=take_any(ApimSubscriptionId) by CorrelationId\\r\\n) on CorrelationId\\r\\n| project SubscriptionName = ApimSubscriptionId, DeploymentName, PromptTokens, CompletionTokens;\\r\\nlogsWithSub\\r\\n| join kind=inner (\\r\\n    PRICING_CL\\r\\n    | summarize arg_max(TimeGenerated, *) by Model\\r\\n    | project Model, InputTokensPrice, OutputTokensPrice\\r\\n) on $left.DeploymentName == $right.Model\\r\\n| extend InputCost = PromptTokens * InputTokensPrice / 1000000.0\\r\\n| extend OutputCost = CompletionTokens * OutputTokensPrice / 1000000.0\\r\\n| summarize TotalCost = round(sum(InputCost + OutputCost), 4) by SubscriptionName\\r\\n| join kind=inner (\\r\\n    SUBSCRIPTION_QUOTA_CL\\r\\n    | summarize arg_max(TimeGenerated, *) by Subscription\\r\\n    | project Subscription, CostQuota\\r\\n) on $left.SubscriptionName == $right.Subscription\\r\\n| project Department = replace_string(SubscriptionName, 'subscription-', ''), CostQuota, TotalCost\",\n        \"size\": 0,\n        \"title\": \"Cost by Department vs Quota (Current Month)\",\n        \"timeContext\": {\n          \"durationMs\": 2592000000\n        },\n        \"queryType\": 0,\n        \"resourceType\": \"microsoft.operationalinsights/workspaces\",\n        \"visualization\": \"unstackedbar\",\n        \"chartSettings\": {\n          \"xAxis\": \"Department\",\n          \"yAxis\": [\"CostQuota\", \"TotalCost\"],\n          \"showLegend\": true,\n          \"seriesLabelSettings\": [\n            { \"seriesName\": \"CostQuota\", \"label\": \"Monthly Quota ($)\" },\n            { \"seriesName\": \"TotalCost\", \"label\": \"Actual Cost ($)\" }\n          ]\n        }\n      },\n      \"customWidth\": \"50\",\n      \"name\": \"query - cost-by-department\"\n    },\n    {\n      \"type\": 3,\n      \"content\": {\n        \"version\": \"KqlItem/1.0\",\n        \"query\": \"let llmLogs = ApiManagementGatewayLlmLog\\r\\n| where TimeGenerated >= startofmonth(now()) and TimeGenerated <= endofmonth(now())\\r\\n| where DeploymentName != '';\\r\\nlet logsWithSub = llmLogs\\r\\n| join kind=leftouter (\\r\\n    ApiManagementGatewayLogs\\r\\n    | where TimeGenerated >= startofmonth(now())\\r\\n    | summarize ApimSubscriptionId=take_any(ApimSubscriptionId) by CorrelationId\\r\\n) on CorrelationId\\r\\n| project SubscriptionName = ApimSubscriptionId, DeploymentName, PromptTokens, CompletionTokens;\\r\\nlogsWithSub\\r\\n| join kind=inner (\\r\\n    PRICING_CL\\r\\n    | summarize arg_max(TimeGenerated, *) by Model\\r\\n    | project Model, InputTokensPrice, OutputTokensPrice\\r\\n) on $left.DeploymentName == $right.Model\\r\\n| extend Cost = (PromptTokens * InputTokensPrice + CompletionTokens * OutputTokensPrice) / 1000000.0\\r\\n| summarize TotalCost = round(sum(Cost), 4) by SubscriptionName\\r\\n| join kind=inner (\\r\\n    SUBSCRIPTION_QUOTA_CL\\r\\n    | summarize arg_max(TimeGenerated, *) by Subscription\\r\\n    | project Subscription, CostQuota\\r\\n) on $left.SubscriptionName == $right.Subscription\\r\\n| extend UsagePercent = round(TotalCost / CostQuota * 100, 1)\\r\\n| project Department = replace_string(SubscriptionName, 'subscription-', ''), UsagePercent\\r\\n| order by UsagePercent desc\",\n        \"size\": 0,\n        \"title\": \"Quota Usage % (Current Month)\",\n        \"timeContext\": {\n          \"durationMs\": 2592000000\n        },\n        \"queryType\": 0,\n        \"resourceType\": \"microsoft.operationalinsights/workspaces\",\n        \"visualization\": \"unstackedbar\",\n        \"chartSettings\": {\n          \"xAxis\": \"Department\",\n          \"yAxis\": [\"UsagePercent\"],\n          \"showLegend\": true,\n          \"ySettings\": {\n            \"numberFormatSettings\": {\n              \"unit\": 1,\n              \"options\": { \"style\": \"decimal\" }\n            }\n          },\n          \"seriesLabelSettings\": [\n            { \"seriesName\": \"UsagePercent\", \"label\": \"Quota Used (%)\" }\n          ]\n        }\n      },\n      \"customWidth\": \"50\",\n      \"name\": \"query - quota-percent\"\n    },\n    {\n      \"type\": 3,\n      \"content\": {\n        \"version\": \"KqlItem/1.0\",\n        \"query\": \"let llmLogs = ApiManagementGatewayLlmLog\\r\\n| where DeploymentName != '';\\r\\nlet logsWithSub = llmLogs\\r\\n| join kind=leftouter (\\r\\n    ApiManagementGatewayLogs\\r\\n    | summarize ApimSubscriptionId=take_any(ApimSubscriptionId) by CorrelationId\\r\\n) on CorrelationId\\r\\n| project TimeGenerated, SubscriptionName = ApimSubscriptionId, DeploymentName, PromptTokens, CompletionTokens;\\r\\nlogsWithSub\\r\\n| join kind=inner (\\r\\n    PRICING_CL\\r\\n    | summarize arg_max(TimeGenerated, *) by Model\\r\\n    | project Model, InputTokensPrice, OutputTokensPrice\\r\\n) on $left.DeploymentName == $right.Model\\r\\n| extend Cost = (PromptTokens * InputTokensPrice + CompletionTokens * OutputTokensPrice) / 1000000.0\\r\\n| summarize TotalCost = round(sum(Cost), 4) by Department = replace_string(SubscriptionName, 'subscription-', ''), bin(TimeGenerated, 5m)\\r\\n| order by TimeGenerated asc\",\n        \"size\": 0,\n        \"title\": \"Cost Over Time by Department\",\n        \"timeContextFromParameter\": \"TimeRange\",\n        \"queryType\": 0,\n        \"resourceType\": \"microsoft.operationalinsights/workspaces\",\n        \"visualization\": \"timechart\",\n        \"chartSettings\": {\n          \"showLegend\": true\n        }\n      },\n      \"name\": \"query - cost-over-time\"\n    },\n    {\n      \"type\": 1,\n      \"content\": {\n        \"json\": \"## 📊 Usage Analysis\\r\\nToken consumption and request volume broken down by model and department.\"\n      },\n      \"name\": \"text - usage-header\"\n    },\n    {\n      \"type\": 3,\n      \"content\": {\n        \"version\": \"KqlItem/1.0\",\n        \"query\": \"ApiManagementGatewayLlmLog\\r\\n| where DeploymentName != ''\\r\\n| summarize Requests = count(), TotalTokens = sum(TotalTokens) by Model = DeploymentName\\r\\n| order by Requests desc\",\n        \"size\": 0,\n        \"title\": \"Requests & Tokens by Model\",\n        \"timeContextFromParameter\": \"TimeRange\",\n        \"queryType\": 0,\n        \"resourceType\": \"microsoft.operationalinsights/workspaces\",\n        \"visualization\": \"unstackedbar\",\n        \"chartSettings\": {\n          \"xAxis\": \"Model\",\n          \"yAxis\": [\"Requests\", \"TotalTokens\"],\n          \"showLegend\": true\n        }\n      },\n      \"customWidth\": \"50\",\n      \"name\": \"query - requests-by-model\"\n    },\n    {\n      \"type\": 3,\n      \"content\": {\n        \"version\": \"KqlItem/1.0\",\n        \"query\": \"ApiManagementGatewayLlmLog\\r\\n| where DeploymentName != ''\\r\\n| join kind=leftouter (\\r\\n    ApiManagementGatewayLogs\\r\\n    | summarize ApimSubscriptionId=take_any(ApimSubscriptionId) by CorrelationId\\r\\n) on CorrelationId\\r\\n| summarize PromptTokens = sum(PromptTokens), CompletionTokens = sum(CompletionTokens)\\r\\n    by Department = replace_string(ApimSubscriptionId, 'subscription-', '')\\r\\n| order by PromptTokens desc\",\n        \"size\": 0,\n        \"title\": \"Token Usage by Department\",\n        \"timeContextFromParameter\": \"TimeRange\",\n        \"queryType\": 0,\n        \"resourceType\": \"microsoft.operationalinsights/workspaces\",\n        \"visualization\": \"unstackedbar\",\n        \"chartSettings\": {\n          \"xAxis\": \"Department\",\n          \"yAxis\": [\"PromptTokens\", \"CompletionTokens\"],\n          \"showLegend\": true,\n          \"seriesLabelSettings\": [\n            { \"seriesName\": \"PromptTokens\", \"label\": \"Input Tokens\" },\n            { \"seriesName\": \"CompletionTokens\", \"label\": \"Output Tokens\" }\n          ]\n        }\n      },\n      \"customWidth\": \"50\",\n      \"name\": \"query - tokens-by-department\"\n    },\n    {\n      \"type\": 1,\n      \"content\": {\n        \"json\": \"## 🏗️ Infrastructure\\r\\nBackend routing distribution and API response status codes.\"\n      },\n      \"name\": \"text - infra-header\"\n    },\n    {\n      \"type\": 3,\n      \"content\": {\n        \"version\": \"KqlItem/1.0\",\n        \"query\": \"ApiManagementGatewayLogs\\r\\n| where BackendId != ''\\r\\n| summarize Requests = count() by Backend = BackendId\\r\\n| order by Requests desc\",\n        \"size\": 0,\n        \"title\": \"Backend Distribution\",\n        \"timeContextFromParameter\": \"TimeRange\",\n        \"queryType\": 0,\n        \"resourceType\": \"microsoft.operationalinsights/workspaces\",\n        \"visualization\": \"piechart\"\n      },\n      \"customWidth\": \"50\",\n      \"name\": \"query - backend-distribution\"\n    },\n    {\n      \"type\": 3,\n      \"content\": {\n        \"version\": \"KqlItem/1.0\",\n        \"query\": \"ApiManagementGatewayLogs\\r\\n| summarize Requests = count() by StatusCode = tostring(ResponseCode)\\r\\n| order by StatusCode asc\",\n        \"size\": 0,\n        \"title\": \"Response Status Codes\",\n        \"timeContextFromParameter\": \"TimeRange\",\n        \"queryType\": 0,\n        \"resourceType\": \"microsoft.operationalinsights/workspaces\",\n        \"visualization\": \"unstackedbar\",\n        \"chartSettings\": {\n          \"xAxis\": \"StatusCode\",\n          \"yAxis\": [\"Requests\"],\n          \"showLegend\": true\n        }\n      },\n      \"customWidth\": \"50\",\n      \"name\": \"query - response-codes\"\n    }\n  ],\n  \"fallbackResourceIds\": [\n    \"{workspace-id}\"\n  ],\n  \"$schema\": \"https://github.com/Microsoft/Application-Insights-Workbooks/blob/master/schema/workbook.json\"\n}",
+    "$fxv#1": "{\n  \"version\": \"Notebook/1.0\",\n  \"items\": [\n    {\n      \"type\": 9,\n      \"content\": {\n        \"version\": \"KqlParameterItem/1.0\",\n        \"parameters\": [\n          {\n            \"id\": \"a1b2c3d4-e5f6-7890-abcd-ef1234567890\",\n            \"version\": \"KqlParameterItem/1.0\",\n            \"name\": \"TimeRange\",\n            \"label\": \"Time Range\",\n            \"type\": 4,\n            \"isRequired\": true,\n            \"typeSettings\": {\n              \"selectableValues\": [\n                { \"durationMs\": 3600000 },\n                { \"durationMs\": 14400000 },\n                { \"durationMs\": 43200000 },\n                { \"durationMs\": 86400000 },\n                { \"durationMs\": 604800000 },\n                { \"durationMs\": 2592000000 }\n              ],\n              \"allowCustom\": true\n            },\n            \"value\": {\n              \"durationMs\": 86400000\n            }\n          }\n        ],\n        \"style\": \"pills\",\n        \"queryType\": 0,\n        \"resourceType\": \"microsoft.operationalinsights/workspaces\"\n      },\n      \"name\": \"parameters - TimeRange\"\n    },\n    {\n      \"type\": 1,\n      \"content\": {\n        \"json\": \"## 💰 Cost Analysis\\r\\nCost tracking per department (APIM product subscription) compared against monthly quotas. Prices from PRICING_CL custom table (per 1M tokens).\"\n      },\n      \"name\": \"text - cost-header\"\n    },\n    {\n      \"type\": 3,\n      \"content\": {\n        \"version\": \"KqlItem/1.0\",\n        \"query\": \"let dedicatedLlm = ApiManagementGatewayLlmLog\\r\\n| where TimeGenerated >= startofmonth(now()) and TimeGenerated <= endofmonth(now())\\r\\n| where isnotempty(DeploymentName)\\r\\n| project TimeGenerated, CorrelationId, DeploymentName, PromptTokens=toreal(PromptTokens), CompletionTokens=toreal(CompletionTokens);\\r\\nlet legacyLlm = AzureDiagnostics\\r\\n| where TimeGenerated >= startofmonth(now()) and TimeGenerated <= endofmonth(now())\\r\\n| where Category == 'GatewayLlmLogs'\\r\\n| where isnotempty(deploymentName_s) and totalTokens_d > 0\\r\\n| project TimeGenerated, CorrelationId, DeploymentName=deploymentName_s, PromptTokens=toreal(promptTokens_d), CompletionTokens=toreal(completionTokens_d);\\r\\nlet llmLogs = union isfuzzy=true dedicatedLlm, legacyLlm;\\r\\nlet dedicatedGateway = ApiManagementGatewayLogs\\r\\n| where TimeGenerated >= startofmonth(now())\\r\\n| summarize SubscriptionName=take_any(ApimSubscriptionId) by CorrelationId;\\r\\nlet legacyGateway = AzureDiagnostics\\r\\n| where TimeGenerated >= startofmonth(now())\\r\\n| where Category == 'GatewayLogs'\\r\\n| summarize SubscriptionName=take_any(apimSubscriptionId_s) by CorrelationId;\\r\\nlet gatewayLogs = union isfuzzy=true dedicatedGateway, legacyGateway | summarize SubscriptionName=take_any(SubscriptionName) by CorrelationId;\\r\\nllmLogs\\r\\n| join kind=leftouter gatewayLogs on CorrelationId\\r\\n| project SubscriptionName, DeploymentName, PromptTokens, CompletionTokens\\r\\n| join kind=inner (\\r\\n    PRICING_CL\\r\\n    | summarize arg_max(TimeGenerated, *) by Model\\r\\n    | project Model, InputTokensPrice, OutputTokensPrice\\r\\n) on $left.DeploymentName == $right.Model\\r\\n| extend InputCost = PromptTokens * InputTokensPrice / 1000000.0\\r\\n| extend OutputCost = CompletionTokens * OutputTokensPrice / 1000000.0\\r\\n| summarize TotalCost = round(sum(InputCost + OutputCost), 6) by SubscriptionName\\r\\n| join kind=inner (\\r\\n    SUBSCRIPTION_QUOTA_CL\\r\\n    | summarize arg_max(TimeGenerated, *) by Subscription\\r\\n    | project Subscription, CostQuota\\r\\n) on $left.SubscriptionName == $right.Subscription\\r\\n| project Department = replace_string(SubscriptionName, 'subscription-', ''), CostQuota, TotalCost\",\n        \"size\": 0,\n        \"title\": \"Cost by Department vs Quota (Current Month)\",\n        \"timeContext\": {\n          \"durationMs\": 2592000000\n        },\n        \"queryType\": 0,\n        \"resourceType\": \"microsoft.operationalinsights/workspaces\",\n        \"visualization\": \"unstackedbar\",\n        \"chartSettings\": {\n          \"xAxis\": \"Department\",\n          \"yAxis\": [\"CostQuota\", \"TotalCost\"],\n          \"showLegend\": true,\n          \"seriesLabelSettings\": [\n            { \"seriesName\": \"CostQuota\", \"label\": \"Monthly Quota ($)\" },\n            { \"seriesName\": \"TotalCost\", \"label\": \"Actual Cost ($)\" }\n          ]\n        }\n      },\n      \"customWidth\": \"50\",\n      \"name\": \"query - cost-by-department\"\n    },\n    {\n      \"type\": 3,\n      \"content\": {\n        \"version\": \"KqlItem/1.0\",\n        \"query\": \"let dedicatedLlm = ApiManagementGatewayLlmLog\\r\\n| where TimeGenerated >= startofmonth(now()) and TimeGenerated <= endofmonth(now())\\r\\n| where isnotempty(DeploymentName)\\r\\n| project TimeGenerated, CorrelationId, DeploymentName, PromptTokens=toreal(PromptTokens), CompletionTokens=toreal(CompletionTokens);\\r\\nlet legacyLlm = AzureDiagnostics\\r\\n| where TimeGenerated >= startofmonth(now()) and TimeGenerated <= endofmonth(now())\\r\\n| where Category == 'GatewayLlmLogs'\\r\\n| where isnotempty(deploymentName_s) and totalTokens_d > 0\\r\\n| project TimeGenerated, CorrelationId, DeploymentName=deploymentName_s, PromptTokens=toreal(promptTokens_d), CompletionTokens=toreal(completionTokens_d);\\r\\nlet llmLogs = union isfuzzy=true dedicatedLlm, legacyLlm;\\r\\nlet dedicatedGateway = ApiManagementGatewayLogs\\r\\n| where TimeGenerated >= startofmonth(now())\\r\\n| summarize SubscriptionName=take_any(ApimSubscriptionId) by CorrelationId;\\r\\nlet legacyGateway = AzureDiagnostics\\r\\n| where TimeGenerated >= startofmonth(now())\\r\\n| where Category == 'GatewayLogs'\\r\\n| summarize SubscriptionName=take_any(apimSubscriptionId_s) by CorrelationId;\\r\\nlet gatewayLogs = union isfuzzy=true dedicatedGateway, legacyGateway | summarize SubscriptionName=take_any(SubscriptionName) by CorrelationId;\\r\\nllmLogs\\r\\n| join kind=leftouter gatewayLogs on CorrelationId\\r\\n| project SubscriptionName, DeploymentName, PromptTokens, CompletionTokens\\r\\n| join kind=inner (\\r\\n    PRICING_CL\\r\\n    | summarize arg_max(TimeGenerated, *) by Model\\r\\n    | project Model, InputTokensPrice, OutputTokensPrice\\r\\n) on $left.DeploymentName == $right.Model\\r\\n| extend InputCost = PromptTokens * InputTokensPrice / 1000000.0\\r\\n| extend OutputCost = CompletionTokens * OutputTokensPrice / 1000000.0\\r\\n| summarize TotalCost = round(sum(InputCost + OutputCost), 6) by SubscriptionName\\r\\n| join kind=inner (\\r\\n    SUBSCRIPTION_QUOTA_CL\\r\\n    | summarize arg_max(TimeGenerated, *) by Subscription\\r\\n    | project Subscription, CostQuota\\r\\n) on $left.SubscriptionName == $right.Subscription\\r\\n| project Department = replace_string(SubscriptionName, 'subscription-', ''), CostQuota, TotalCost\\r\\n| extend UsagePercent = round(TotalCost / CostQuota * 100, 1)\\r\\n| project Department, UsagePercent\\r\\n| order by UsagePercent desc\",\n        \"size\": 0,\n        \"title\": \"Quota Usage % (Current Month)\",\n        \"timeContext\": {\n          \"durationMs\": 2592000000\n        },\n        \"queryType\": 0,\n        \"resourceType\": \"microsoft.operationalinsights/workspaces\",\n        \"visualization\": \"unstackedbar\",\n        \"chartSettings\": {\n          \"xAxis\": \"Department\",\n          \"yAxis\": [\"UsagePercent\"],\n          \"showLegend\": true,\n          \"ySettings\": {\n            \"numberFormatSettings\": {\n              \"unit\": 1,\n              \"options\": { \"style\": \"decimal\" }\n            }\n          },\n          \"seriesLabelSettings\": [\n            { \"seriesName\": \"UsagePercent\", \"label\": \"Quota Used (%)\" }\n          ]\n        }\n      },\n      \"customWidth\": \"50\",\n      \"name\": \"query - quota-percent\"\n    },\n    {\n      \"type\": 3,\n      \"content\": {\n        \"version\": \"KqlItem/1.0\",\n        \"query\": \"let dedicatedLlm = ApiManagementGatewayLlmLog\\r\\n| where isnotempty(DeploymentName)\\r\\n| project TimeGenerated, CorrelationId, DeploymentName, PromptTokens=toreal(PromptTokens), CompletionTokens=toreal(CompletionTokens);\\r\\nlet legacyLlm = AzureDiagnostics\\r\\n| where Category == 'GatewayLlmLogs'\\r\\n| where isnotempty(deploymentName_s) and totalTokens_d > 0\\r\\n| project TimeGenerated, CorrelationId, DeploymentName=deploymentName_s, PromptTokens=toreal(promptTokens_d), CompletionTokens=toreal(completionTokens_d);\\r\\nlet llmLogs = union isfuzzy=true dedicatedLlm, legacyLlm;\\r\\nlet dedicatedGateway = ApiManagementGatewayLogs\\r\\n| summarize SubscriptionName=take_any(ApimSubscriptionId) by CorrelationId;\\r\\nlet legacyGateway = AzureDiagnostics\\r\\n| where Category == 'GatewayLogs'\\r\\n| summarize SubscriptionName=take_any(apimSubscriptionId_s) by CorrelationId;\\r\\nlet gatewayLogs = union isfuzzy=true dedicatedGateway, legacyGateway | summarize SubscriptionName=take_any(SubscriptionName) by CorrelationId;\\r\\nllmLogs\\r\\n| join kind=leftouter gatewayLogs on CorrelationId\\r\\n| project TimeGenerated, SubscriptionName, DeploymentName, PromptTokens, CompletionTokens\\r\\n| join kind=inner (\\r\\n    PRICING_CL\\r\\n    | summarize arg_max(TimeGenerated, *) by Model\\r\\n    | project Model, InputTokensPrice, OutputTokensPrice\\r\\n) on $left.DeploymentName == $right.Model\\r\\n| extend Cost = (PromptTokens * InputTokensPrice + CompletionTokens * OutputTokensPrice) / 1000000.0\\r\\n| summarize TotalCost = round(sum(Cost), 6) by Department = replace_string(SubscriptionName, 'subscription-', ''), bin(TimeGenerated, 5m)\\r\\n| order by TimeGenerated asc\",\n        \"size\": 0,\n        \"title\": \"Cost Over Time by Department\",\n        \"timeContextFromParameter\": \"TimeRange\",\n        \"queryType\": 0,\n        \"resourceType\": \"microsoft.operationalinsights/workspaces\",\n        \"visualization\": \"timechart\",\n        \"chartSettings\": {\n          \"showLegend\": true\n        }\n      },\n      \"name\": \"query - cost-over-time\"\n    },\n    {\n      \"type\": 1,\n      \"content\": {\n        \"json\": \"## 📊 Usage Analysis\\r\\nToken consumption and request volume broken down by model and department.\"\n      },\n      \"name\": \"text - usage-header\"\n    },\n    {\n      \"type\": 3,\n      \"content\": {\n        \"version\": \"KqlItem/1.0\",\n        \"query\": \"let dedicatedLlm = ApiManagementGatewayLlmLog\\r\\n| where isnotempty(DeploymentName)\\r\\n| project DeploymentName, TotalTokens=toreal(TotalTokens);\\r\\nlet legacyLlm = AzureDiagnostics\\r\\n| where Category == 'GatewayLlmLogs'\\r\\n| where isnotempty(deploymentName_s) and totalTokens_d > 0\\r\\n| project DeploymentName=deploymentName_s, TotalTokens=toreal(totalTokens_d);\\r\\nunion isfuzzy=true dedicatedLlm, legacyLlm\\r\\n| summarize Requests = count(), TotalTokens = sum(TotalTokens) by Model = DeploymentName\\r\\n| order by Requests desc\",\n        \"size\": 0,\n        \"title\": \"Requests & Tokens by Model\",\n        \"timeContextFromParameter\": \"TimeRange\",\n        \"queryType\": 0,\n        \"resourceType\": \"microsoft.operationalinsights/workspaces\",\n        \"visualization\": \"unstackedbar\",\n        \"chartSettings\": {\n          \"xAxis\": \"Model\",\n          \"yAxis\": [\"Requests\", \"TotalTokens\"],\n          \"showLegend\": true\n        }\n      },\n      \"customWidth\": \"50\",\n      \"name\": \"query - requests-by-model\"\n    },\n    {\n      \"type\": 3,\n      \"content\": {\n        \"version\": \"KqlItem/1.0\",\n        \"query\": \"let dedicatedLlm = ApiManagementGatewayLlmLog\\r\\n| where isnotempty(DeploymentName)\\r\\n| project CorrelationId, PromptTokens=toreal(PromptTokens), CompletionTokens=toreal(CompletionTokens);\\r\\nlet legacyLlm = AzureDiagnostics\\r\\n| where Category == 'GatewayLlmLogs'\\r\\n| where isnotempty(deploymentName_s) and totalTokens_d > 0\\r\\n| project CorrelationId, PromptTokens=toreal(promptTokens_d), CompletionTokens=toreal(completionTokens_d);\\r\\nlet llmLogs = union isfuzzy=true dedicatedLlm, legacyLlm;\\r\\nlet dedicatedGateway = ApiManagementGatewayLogs\\r\\n| summarize SubscriptionName=take_any(ApimSubscriptionId) by CorrelationId;\\r\\nlet legacyGateway = AzureDiagnostics\\r\\n| where Category == 'GatewayLogs'\\r\\n| summarize SubscriptionName=take_any(apimSubscriptionId_s) by CorrelationId;\\r\\nlet gatewayLogs = union isfuzzy=true dedicatedGateway, legacyGateway | summarize SubscriptionName=take_any(SubscriptionName) by CorrelationId;\\r\\nllmLogs\\r\\n| join kind=leftouter gatewayLogs on CorrelationId\\r\\n| summarize PromptTokens = sum(PromptTokens), CompletionTokens = sum(CompletionTokens)\\r\\n    by Department = replace_string(SubscriptionName, 'subscription-', '')\\r\\n| order by PromptTokens desc\",\n        \"size\": 0,\n        \"title\": \"Token Usage by Department\",\n        \"timeContextFromParameter\": \"TimeRange\",\n        \"queryType\": 0,\n        \"resourceType\": \"microsoft.operationalinsights/workspaces\",\n        \"visualization\": \"unstackedbar\",\n        \"chartSettings\": {\n          \"xAxis\": \"Department\",\n          \"yAxis\": [\"PromptTokens\", \"CompletionTokens\"],\n          \"showLegend\": true,\n          \"seriesLabelSettings\": [\n            { \"seriesName\": \"PromptTokens\", \"label\": \"Input Tokens\" },\n            { \"seriesName\": \"CompletionTokens\", \"label\": \"Output Tokens\" }\n          ]\n        }\n      },\n      \"customWidth\": \"50\",\n      \"name\": \"query - tokens-by-department\"\n    },\n    {\n      \"type\": 1,\n      \"content\": {\n        \"json\": \"## 🏗️ Infrastructure\\r\\nBackend routing distribution and API response status codes.\"\n      },\n      \"name\": \"text - infra-header\"\n    },\n    {\n      \"type\": 3,\n      \"content\": {\n        \"version\": \"KqlItem/1.0\",\n        \"query\": \"let dedicatedGateway = ApiManagementGatewayLogs | where isnotempty(BackendId) | project Backend=BackendId;\\r\\nlet legacyGateway = AzureDiagnostics | where Category == 'GatewayLogs' and isnotempty(backendId_s) | project Backend=backendId_s;\\r\\nunion isfuzzy=true dedicatedGateway, legacyGateway\\r\\n| summarize Requests=count() by Backend\\r\\n| order by Requests desc\",\n        \"size\": 0,\n        \"title\": \"Backend Distribution\",\n        \"timeContextFromParameter\": \"TimeRange\",\n        \"queryType\": 0,\n        \"resourceType\": \"microsoft.operationalinsights/workspaces\",\n        \"visualization\": \"piechart\"\n      },\n      \"customWidth\": \"50\",\n      \"name\": \"query - backend-distribution\"\n    },\n    {\n      \"type\": 3,\n      \"content\": {\n        \"version\": \"KqlItem/1.0\",\n        \"query\": \"let dedicatedGateway = ApiManagementGatewayLogs | project StatusCode=tostring(ResponseCode);\\r\\nlet legacyGateway = AzureDiagnostics | where Category == 'GatewayLogs' | project StatusCode=tostring(toint(responseCode_d));\\r\\nunion isfuzzy=true dedicatedGateway, legacyGateway\\r\\n| summarize Requests=count() by StatusCode\\r\\n| order by StatusCode asc\",\n        \"size\": 0,\n        \"title\": \"Response Status Codes\",\n        \"timeContextFromParameter\": \"TimeRange\",\n        \"queryType\": 0,\n        \"resourceType\": \"microsoft.operationalinsights/workspaces\",\n        \"visualization\": \"unstackedbar\",\n        \"chartSettings\": {\n          \"xAxis\": \"StatusCode\",\n          \"yAxis\": [\"Requests\"],\n          \"showLegend\": true\n        }\n      },\n      \"customWidth\": \"50\",\n      \"name\": \"query - response-codes\"\n    }\n  ],\n  \"fallbackResourceIds\": [\n    \"{workspace-id}\"\n  ],\n  \"$schema\": \"https://github.com/Microsoft/Application-Insights-Workbooks/blob/master/schema/workbook.json\"\n}\n",
     "$fxv#2": "<policies>\n    <inbound>\n        <base />\n        <azure-openai-token-limit counter-key=\"@(context.Subscription.Id)\"\n            tokens-per-minute=\"{tokens-per-minute}\" estimate-prompt-tokens=\"false\">\n        </azure-openai-token-limit>        \n    </inbound>\n    <backend>\n        <base />\n    </backend>\n    <outbound>\n        <base />\n    </outbound>\n    <on-error>\n        <base />\n    </on-error>\n</policies>\n",
-    "resourceSuffix": "[uniqueString(subscription().id, resourceGroup().id)]",
+    "primaryNameSuffix": "[format('{0}-{1}-{2}-{3}', parameters('projectName'), parameters('subprojectName'), parameters('resourceNumber'), parameters('tenantName'))]",
+    "secondaryNameSuffix": "[format('{0}-{1}-{2}-{3}', parameters('projectName'), parameters('subprojectName'), parameters('secondaryResourceNumber'), parameters('tenantName'))]",
+    "primaryDcrNameSuffix": "[format('{0}-{1}-{2}-{3}', parameters('projectName'), parameters('dcrSubprojectName'), parameters('resourceNumber'), parameters('tenantName'))]",
+    "secondaryDcrNameSuffix": "[format('{0}-{1}-{2}-{3}', parameters('projectName'), parameters('dcrSubprojectName'), parameters('secondaryResourceNumber'), parameters('tenantName'))]",
     "monitoringMetricsPublisherRoleDefinitionID": "[resourceId('Microsoft.Authorization/roleDefinitions', '3913510d-42f4-4e42-8a64-420c390055eb')]",
     "apimServiceContributorRoleDefinitionID": "[resourceId('Microsoft.Authorization/roleDefinitions', '312a565d-c81f-4fd8-895a-4e21e48d571c')]"
   },
@@ -250,6 +300,7 @@
       "name": "apimDiagnosticSettings",
       "properties": {
         "workspaceId": "[reference('lawModule').outputs.id.value]",
+        "logAnalyticsDestinationType": "Dedicated",
         "logs": [
           {
             "categoryGroup": "AllLogs",
@@ -306,7 +357,7 @@
     "pricingDCR": {
       "type": "Microsoft.Insights/dataCollectionRules",
       "apiVersion": "2023-03-11",
-      "name": "[format('dcr-pricing-{0}', variables('resourceSuffix'))]",
+      "name": "[format('dcr-{0}', variables('primaryDcrNameSuffix'))]",
       "location": "[resourceGroup().location]",
       "kind": "Direct",
       "properties": {
@@ -361,8 +412,8 @@
     "pricingDCRRoleAssignment": {
       "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
-      "scope": "[format('Microsoft.Insights/dataCollectionRules/{0}', format('dcr-pricing-{0}', variables('resourceSuffix')))]",
-      "name": "[guid(subscription().id, resourceGroup().id, format('dcr-pricing-{0}', variables('resourceSuffix')), variables('monitoringMetricsPublisherRoleDefinitionID'))]",
+      "scope": "[format('Microsoft.Insights/dataCollectionRules/{0}', format('dcr-{0}', variables('primaryDcrNameSuffix')))]",
+      "name": "[guid(subscription().id, resourceGroup().id, format('dcr-{0}', variables('primaryDcrNameSuffix')), variables('monitoringMetricsPublisherRoleDefinitionID'))]",
       "properties": {
         "roleDefinitionId": "[variables('monitoringMetricsPublisherRoleDefinitionID')]",
         "principalId": "[deployer().objectId]",
@@ -407,7 +458,7 @@
     "subscriptionQuotaDCR": {
       "type": "Microsoft.Insights/dataCollectionRules",
       "apiVersion": "2023-03-11",
-      "name": "[format('dcr-quota-{0}', variables('resourceSuffix'))]",
+      "name": "[format('dcr-{0}', variables('secondaryDcrNameSuffix'))]",
       "location": "[resourceGroup().location]",
       "kind": "Direct",
       "properties": {
@@ -458,8 +509,8 @@
     "subscriptionQuotaDCRRoleAssignment": {
       "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
-      "scope": "[format('Microsoft.Insights/dataCollectionRules/{0}', format('dcr-quota-{0}', variables('resourceSuffix')))]",
-      "name": "[guid(subscription().id, resourceGroup().id, format('dcr-quota-{0}', variables('resourceSuffix')), variables('monitoringMetricsPublisherRoleDefinitionID'))]",
+      "scope": "[format('Microsoft.Insights/dataCollectionRules/{0}', format('dcr-{0}', variables('secondaryDcrNameSuffix')))]",
+      "name": "[guid(subscription().id, resourceGroup().id, format('dcr-{0}', variables('secondaryDcrNameSuffix')), variables('monitoringMetricsPublisherRoleDefinitionID'))]",
       "properties": {
         "roleDefinitionId": "[variables('monitoringMetricsPublisherRoleDefinitionID')]",
         "principalId": "[deployer().objectId]",
@@ -472,7 +523,7 @@
     "openAIUsageWorkbook": {
       "type": "Microsoft.Insights/workbooks",
       "apiVersion": "2022-04-01",
-      "name": "[guid(resourceGroup().id, variables('resourceSuffix'), 'costAnalysis')]",
+      "name": "[guid(resourceGroup().id, variables('primaryNameSuffix'), 'costAnalysis')]",
       "location": "[resourceGroup().location]",
       "kind": "shared",
       "properties": {
@@ -568,7 +619,7 @@
     "updateSubscriptionWorkflow": {
       "type": "Microsoft.Logic/workflows",
       "apiVersion": "2019-05-01",
-      "name": "[format('la-update-sub-{0}', variables('resourceSuffix'))]",
+      "name": "[format('logic-{0}', variables('primaryNameSuffix'))]",
       "location": "[resourceGroup().location]",
       "identity": {
         "type": "SystemAssigned"
@@ -684,7 +735,7 @@
     "workflowDiagnosticSettings": {
       "type": "Microsoft.Insights/diagnosticSettings",
       "apiVersion": "2021-05-01-preview",
-      "scope": "[format('Microsoft.Logic/workflows/{0}', format('la-update-sub-{0}', variables('resourceSuffix')))]",
+      "scope": "[format('Microsoft.Logic/workflows/{0}', format('logic-{0}', variables('primaryNameSuffix')))]",
       "name": "workflowDiagnosticSettings",
       "properties": {
         "workspaceId": "[resourceId('Microsoft.OperationalInsights/workspaces', parameters('lawName'))]",
@@ -710,7 +761,7 @@
       "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
       "scope": "[format('Microsoft.ApiManagement/service/{0}', parameters('apimName'))]",
-      "name": "[guid(subscription().id, resourceGroup().id, format('la-update-sub-{0}', variables('resourceSuffix')), variables('apimServiceContributorRoleDefinitionID'))]",
+      "name": "[guid(subscription().id, resourceGroup().id, format('logic-{0}', variables('primaryNameSuffix')), variables('apimServiceContributorRoleDefinitionID'))]",
       "properties": {
         "roleDefinitionId": "[variables('apimServiceContributorRoleDefinitionID')]",
         "principalId": "[reference('updateSubscriptionWorkflow', '2019-05-01', 'full').identity.principalId]",
@@ -723,7 +774,7 @@
     "actionGroupUpdateSub": {
       "type": "Microsoft.Insights/actionGroups",
       "apiVersion": "2024-10-01-preview",
-      "name": "[format('actiongroup-update-sub-{0}', variables('resourceSuffix'))]",
+      "name": "[format('ag-{0}', variables('primaryNameSuffix'))]",
       "location": "Global",
       "properties": {
         "groupShortName": "Update Sub",
@@ -739,7 +790,7 @@
         "logicAppReceivers": [
           {
             "name": "update-subscription-state",
-            "resourceId": "[resourceId('Microsoft.Logic/workflows', format('la-update-sub-{0}', variables('resourceSuffix')))]",
+            "resourceId": "[resourceId('Microsoft.Logic/workflows', format('logic-{0}', variables('primaryNameSuffix')))]",
             "callbackUrl": "[format('{0}/triggers/When_an_Alert_is_Received/paths/invoke?api-version={1}&sp={2}&sv={3}&sig={4}', listCallbackUrl('updateSubscriptionWorkflow', '2019-05-01').basePath, listCallbackUrl('updateSubscriptionWorkflow', '2019-05-01').queries['api-version'], listCallbackUrl('updateSubscriptionWorkflow', '2019-05-01').queries.sp, listCallbackUrl('updateSubscriptionWorkflow', '2019-05-01').queries.sv, listCallbackUrl('updateSubscriptionWorkflow', '2019-05-01').queries.sig)]",
             "useCommonAlertSchema": true
           }
@@ -754,7 +805,7 @@
     "ruleSuspendSub": {
       "type": "Microsoft.Insights/scheduledQueryRules",
       "apiVersion": "2025-01-01-preview",
-      "name": "[format('alert-suspend-sub-{0}', variables('resourceSuffix'))]",
+      "name": "[format('alert-{0}', variables('primaryNameSuffix'))]",
       "location": "westeurope",
       "kind": "LogAlert",
       "properties": {
@@ -773,7 +824,7 @@
         "criteria": {
           "allOf": [
             {
-              "query": "let llmHeaderLogs = ApiManagementGatewayLlmLog\n    | where TimeGenerated >= startofmonth(now()) and TimeGenerated <= endofmonth(now())\n    | where DeploymentName != '';\nlet llmLogsWithSubscriptionId = llmHeaderLogs\n    | join kind=leftouter ApiManagementGatewayLogs on CorrelationId\n    | project\n        SubscriptionName = ApimSubscriptionId,\n        DeploymentName,\n        PromptTokens,\n        CompletionTokens,\n        TotalTokens;\nllmLogsWithSubscriptionId\n| join kind=inner (\n    PRICING_CL\n    | summarize arg_max(TimeGenerated, *) by Model\n    | project Model, InputTokensPrice, OutputTokensPrice\n    )\n    on $left.DeploymentName == $right.Model\n| extend InputCost = PromptTokens * InputTokensPrice\n| extend OutputCost = CompletionTokens * OutputTokensPrice\n| summarize\n    InputCost = sum(InputCost),\n    OutputCost = sum(OutputCost)\n    by SubscriptionName\n| extend TotalCost = (InputCost + OutputCost) / 1000\n| join kind=inner (\n    SUBSCRIPTION_QUOTA_CL\n    | summarize arg_max(TimeGenerated, *) by Subscription\n    | project Subscription, CostQuota\n    )\n    on $left.SubscriptionName == $right.Subscription\n| project SubscriptionName, CostQuota, TotalCost\n| where TotalCost > CostQuota\n",
+              "query": "let llmHeaderLogs = ApiManagementGatewayLlmLog\n    | where TimeGenerated >= startofmonth(now()) and TimeGenerated <= endofmonth(now())\n    | where DeploymentName != '';\nlet llmLogsWithSubscriptionId = llmHeaderLogs\n    | join kind=leftouter ApiManagementGatewayLogs on CorrelationId\n    | project\n        SubscriptionName = ApimSubscriptionId,\n        DeploymentName,\n        PromptTokens,\n        CompletionTokens,\n        TotalTokens;\nllmLogsWithSubscriptionId\n| join kind=inner (\n    PRICING_CL\n    | summarize arg_max(TimeGenerated, *) by Model\n    | project Model, InputTokensPrice, OutputTokensPrice\n    )\n    on $left.DeploymentName == $right.Model\n| extend InputCost = PromptTokens * InputTokensPrice\n| extend OutputCost = CompletionTokens * OutputTokensPrice\n| summarize\n    InputCost = sum(InputCost),\n    OutputCost = sum(OutputCost)\n    by SubscriptionName\n| extend TotalCost = (InputCost + OutputCost) / 1000000.0\n| join kind=inner (\n    SUBSCRIPTION_QUOTA_CL\n    | summarize arg_max(TimeGenerated, *) by Subscription\n    | project Subscription, CostQuota\n    )\n    on $left.SubscriptionName == $right.Subscription\n| project SubscriptionName, CostQuota, TotalCost\n| where TotalCost > CostQuota\n",
               "timeAggregation": "Count",
               "dimensions": [
                 {
@@ -796,7 +847,7 @@
         "autoMitigate": false,
         "actions": {
           "actionGroups": [
-            "[resourceId('Microsoft.Insights/actionGroups', format('actiongroup-update-sub-{0}', variables('resourceSuffix')))]"
+            "[resourceId('Microsoft.Insights/actionGroups', format('ag-{0}', variables('primaryNameSuffix')))]"
           ],
           "customProperties": {},
           "actionProperties": {}
@@ -804,13 +855,17 @@
       },
       "dependsOn": [
         "actionGroupUpdateSub",
-        "lawModule"
+        "lawModule",
+        "pricingDCR",
+        "pricingTable",
+        "subscriptionQuotaDCR",
+        "subscriptionQuotaTable"
       ]
     },
     "ruleActivateSub": {
       "type": "Microsoft.Insights/scheduledQueryRules",
       "apiVersion": "2025-01-01-preview",
-      "name": "[format('alert-activate-sub-{0}', variables('resourceSuffix'))]",
+      "name": "[format('alert-{0}', variables('secondaryNameSuffix'))]",
       "location": "westeurope",
       "kind": "LogAlert",
       "properties": {
@@ -829,7 +884,7 @@
         "criteria": {
           "allOf": [
             {
-              "query": "let llmHeaderLogs = ApiManagementGatewayLlmLog\n    | where TimeGenerated >= startofmonth(now()) and TimeGenerated <= endofmonth(now())\n    | where DeploymentName != '';\nlet llmLogsWithSubscriptionId = llmHeaderLogs\n    | join kind=leftouter ApiManagementGatewayLogs on CorrelationId\n    | project\n        SubscriptionName = ApimSubscriptionId,\n        DeploymentName,\n        PromptTokens,\n        CompletionTokens,\n        TotalTokens;\nllmLogsWithSubscriptionId\n| join kind=inner (\n    PRICING_CL\n    | summarize arg_max(TimeGenerated, *) by Model\n    | project Model, InputTokensPrice, OutputTokensPrice\n    )\n    on $left.DeploymentName == $right.Model\n| extend InputCost = PromptTokens * InputTokensPrice\n| extend OutputCost = CompletionTokens * OutputTokensPrice\n| summarize\n    InputCost = sum(InputCost),\n    OutputCost = sum(OutputCost)\n    by SubscriptionName\n| extend TotalCost = (InputCost + OutputCost) / 1000\n| join kind=inner (\n    SUBSCRIPTION_QUOTA_CL\n    | summarize arg_max(TimeGenerated, *) by Subscription\n    | project Subscription, CostQuota\n    )\n    on $left.SubscriptionName == $right.Subscription\n| project SubscriptionName, CostQuota, TotalCost\n| where TotalCost <= CostQuota\n",
+              "query": "let llmHeaderLogs = ApiManagementGatewayLlmLog\n    | where TimeGenerated >= startofmonth(now()) and TimeGenerated <= endofmonth(now())\n    | where DeploymentName != '';\nlet llmLogsWithSubscriptionId = llmHeaderLogs\n    | join kind=leftouter ApiManagementGatewayLogs on CorrelationId\n    | project\n        SubscriptionName = ApimSubscriptionId,\n        DeploymentName,\n        PromptTokens,\n        CompletionTokens,\n        TotalTokens;\nllmLogsWithSubscriptionId\n| join kind=inner (\n    PRICING_CL\n    | summarize arg_max(TimeGenerated, *) by Model\n    | project Model, InputTokensPrice, OutputTokensPrice\n    )\n    on $left.DeploymentName == $right.Model\n| extend InputCost = PromptTokens * InputTokensPrice\n| extend OutputCost = CompletionTokens * OutputTokensPrice\n| summarize\n    InputCost = sum(InputCost),\n    OutputCost = sum(OutputCost)\n    by SubscriptionName\n| extend TotalCost = (InputCost + OutputCost) / 1000000.0\n| join kind=inner (\n    SUBSCRIPTION_QUOTA_CL\n    | summarize arg_max(TimeGenerated, *) by Subscription\n    | project Subscription, CostQuota\n    )\n    on $left.SubscriptionName == $right.Subscription\n| project SubscriptionName, CostQuota, TotalCost\n| where TotalCost <= CostQuota\n",
               "timeAggregation": "Count",
               "dimensions": [
                 {
@@ -852,7 +907,7 @@
         "autoMitigate": false,
         "actions": {
           "actionGroups": [
-            "[resourceId('Microsoft.Insights/actionGroups', format('actiongroup-update-sub-{0}', variables('resourceSuffix')))]"
+            "[resourceId('Microsoft.Insights/actionGroups', format('ag-{0}', variables('primaryNameSuffix')))]"
           ],
           "customProperties": {},
           "actionProperties": {}
@@ -860,7 +915,11 @@
       },
       "dependsOn": [
         "actionGroupUpdateSub",
-        "lawModule"
+        "lawModule",
+        "pricingDCR",
+        "pricingTable",
+        "subscriptionQuotaDCR",
+        "subscriptionQuotaTable"
       ]
     },
     "lawModule": {
@@ -1144,10 +1203,25 @@
             "value": "[reference('lawModule').outputs.id.value]"
           },
           "apimPrincipalId": {
-            "value": "[reference('apim', '2024-06-01-preview', 'full').identity.principalId]"
+            "value": "[reference(resourceId('Microsoft.ApiManagement/service', parameters('apimName')), '2024-06-01-preview', 'Full').identity.principalId]"
           },
           "foundryProjectName": {
             "value": "[parameters('foundryProjectName')]"
+          },
+          "projectName": {
+            "value": "[parameters('projectName')]"
+          },
+          "subprojectName": {
+            "value": "[parameters('subprojectName')]"
+          },
+          "resourceNumber": {
+            "value": "[parameters('resourceNumber')]"
+          },
+          "secondaryResourceNumber": {
+            "value": "[parameters('secondaryResourceNumber')]"
+          },
+          "tenantName": {
+            "value": "[parameters('tenantName')]"
           },
           "appInsightsId": {
             "value": "[reference('appInsightsModule').outputs.id.value]"
@@ -1163,7 +1237,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.35.1.17967",
-              "templateHash": "7510005753405884650"
+              "templateHash": "14954513287163125099"
             }
           },
           "parameters": {
@@ -1196,9 +1270,44 @@
             },
             "foundryProjectName": {
               "type": "string",
-              "defaultValue": "default",
+              "defaultValue": "",
               "metadata": {
-                "description": "AI Foundry project name"
+                "description": "Optional legacy prefix for AI Foundry project names. Leave empty to use the standard naming convention."
+              }
+            },
+            "projectName": {
+              "type": "string",
+              "defaultValue": "ict-apim",
+              "metadata": {
+                "description": "Project segment used in resource names."
+              }
+            },
+            "subprojectName": {
+              "type": "string",
+              "defaultValue": "multi-model-failover",
+              "metadata": {
+                "description": "Subproject segment used in resource names."
+              }
+            },
+            "resourceNumber": {
+              "type": "string",
+              "defaultValue": "001",
+              "metadata": {
+                "description": "Primary three-digit instance number segment used in resource names."
+              }
+            },
+            "secondaryResourceNumber": {
+              "type": "string",
+              "defaultValue": "002",
+              "metadata": {
+                "description": "Secondary three-digit instance number segment used when two resources of the same type are created."
+              }
+            },
+            "tenantName": {
+              "type": "string",
+              "defaultValue": "mpsvcrtest",
+              "metadata": {
+                "description": "Tenant segment used in resource names."
               }
             },
             "appInsightsInstrumentationKey": {
@@ -1219,9 +1328,19 @@
           "variables": {
             "copy": [
               {
+                "name": "foundryInstanceNumbers",
+                "count": "[length(parameters('aiServicesConfig'))]",
+                "input": "[coalesce(tryGet(parameters('aiServicesConfig')[copyIndex('foundryInstanceNumbers')], 'resourceNumber'), if(equals(copyIndex('foundryInstanceNumbers'), 0), parameters('resourceNumber'), if(equals(copyIndex('foundryInstanceNumbers'), 1), parameters('secondaryResourceNumber'), padLeft(string(add(copyIndex('foundryInstanceNumbers'), 1)), 3, '0'))))]"
+              },
+              {
                 "name": "foundryAccountNames",
                 "count": "[length(parameters('aiServicesConfig'))]",
-                "input": "[coalesce(tryGet(parameters('aiServicesConfig')[copyIndex('foundryAccountNames')], 'resourceName'), format('{0}-{1}', parameters('aiServicesConfig')[copyIndex('foundryAccountNames')].name, variables('resourceSuffix')))]"
+                "input": "[coalesce(tryGet(parameters('aiServicesConfig')[copyIndex('foundryAccountNames')], 'resourceName'), format('aif-{0}-{1}-{2}-{3}', parameters('projectName'), parameters('subprojectName'), variables('foundryInstanceNumbers')[copyIndex('foundryAccountNames')], parameters('tenantName')))]"
+              },
+              {
+                "name": "foundryProjectNames",
+                "count": "[length(parameters('aiServicesConfig'))]",
+                "input": "[coalesce(tryGet(parameters('aiServicesConfig')[copyIndex('foundryProjectNames')], 'projectResourceName'), if(empty(parameters('foundryProjectName')), format('proj-{0}-{1}-{2}-{3}', parameters('projectName'), parameters('subprojectName'), variables('foundryInstanceNumbers')[copyIndex('foundryProjectNames')], parameters('tenantName')), format('{0}-{1}', parameters('foundryProjectName'), parameters('aiServicesConfig')[copyIndex('foundryProjectNames')].name)))]"
               }
             ],
             "$fxv#0": {
@@ -1234,7 +1353,6 @@
               "SearchIndexDataContributor": "8ebe5a00-799e-43f5-93ac-243d3dce84a7",
               "SearchServiceContributor": "7ca78c08-252a-4471-8644-bb5ff32d4ba0"
             },
-            "resourceSuffix": "[uniqueString(subscription().id, resourceGroup().id)]",
             "azureRoles": "[variables('$fxv#0')]",
             "cognitiveServicesOpenAIUserRoleDefinitionID": "[resourceId('Microsoft.Authorization/roleDefinitions', variables('azureRoles').CognitiveServicesOpenAIUser)]",
             "aiProjectManagerRoleDefinitionID": "eadc314b-1a2d-4efa-be10-5d325db5065e"
@@ -1270,7 +1388,7 @@
               },
               "type": "Microsoft.CognitiveServices/accounts/projects",
               "apiVersion": "2026-03-15-preview",
-              "name": "[format('{0}/{1}', variables('foundryAccountNames')[copyIndex()], format('{0}-{1}', parameters('foundryProjectName'), parameters('aiServicesConfig')[copyIndex()].name))]",
+              "name": "[format('{0}/{1}', variables('foundryAccountNames')[copyIndex()], variables('foundryProjectNames')[copyIndex()])]",
               "location": "[parameters('aiServicesConfig')[copyIndex()].location]",
               "identity": {
                 "type": "SystemAssigned"
@@ -1306,7 +1424,7 @@
               "type": "Microsoft.Insights/diagnosticSettings",
               "apiVersion": "2021-05-01-preview",
               "scope": "[format('Microsoft.CognitiveServices/accounts/{0}', variables('foundryAccountNames')[copyIndex()])]",
-              "name": "[format('{0}-diagnostics', variables('foundryAccountNames')[copyIndex()])]",
+              "name": "[format('diag-{0}', variables('foundryInstanceNumbers')[copyIndex()])]",
               "properties": {
                 "workspaceId": "[if(not(equals(parameters('lawId'), '')), parameters('lawId'), null())]",
                 "logs": [],
@@ -1318,7 +1436,6 @@
                 ]
               },
               "dependsOn": [
-                "[resourceId('Microsoft.CognitiveServices/accounts', variables('foundryAccountNames')[copyIndex()])]",
                 "[resourceId('Microsoft.CognitiveServices/accounts', variables('foundryAccountNames')[copyIndex()])]"
               ]
             },
@@ -1330,7 +1447,7 @@
               "condition": "[and(greater(length(parameters('appInsightsId')), 0), greater(length(parameters('appInsightsInstrumentationKey')), 0))]",
               "type": "Microsoft.CognitiveServices/accounts/connections",
               "apiVersion": "2026-03-15-preview",
-              "name": "[format('{0}/{1}', variables('foundryAccountNames')[copyIndex()], format('{0}-appInsights-connection', variables('foundryAccountNames')[copyIndex()]))]",
+              "name": "[format('{0}/{1}', variables('foundryAccountNames')[copyIndex()], format('appi-{0}-{1}-{2}-{3}', parameters('projectName'), parameters('subprojectName'), variables('foundryInstanceNumbers')[copyIndex()], parameters('tenantName')))]",
               "properties": {
                 "authType": "ApiKey",
                 "category": "AppInsights",
@@ -1349,7 +1466,6 @@
                 }
               },
               "dependsOn": [
-                "[resourceId('Microsoft.CognitiveServices/accounts', variables('foundryAccountNames')[copyIndex()])]",
                 "[resourceId('Microsoft.CognitiveServices/accounts', variables('foundryAccountNames')[copyIndex()])]"
               ]
             },
@@ -1389,7 +1505,7 @@
                     "value": "[variables('foundryAccountNames')[copyIndex()]]"
                   },
                   "modelsConfig": {
-                    "value": "[filter(parameters('modelsConfig'), lambda('model', or(equals(tryGet(lambdaVariables('model'), 'aiservice'), null()), contains(variables('foundryAccountNames')[copyIndex()], tryGet(lambdaVariables('model'), 'aiservice')))))]"
+                    "value": "[filter(parameters('modelsConfig'), lambda('model', or(or(equals(tryGet(lambdaVariables('model'), 'aiservice'), null()), equals(tryGet(lambdaVariables('model'), 'aiservice'), parameters('aiServicesConfig')[copyIndex()].name)), equals(tryGet(lambdaVariables('model'), 'aiservice'), variables('foundryAccountNames')[copyIndex()]))))]"
                   }
                 },
                 "template": {
@@ -1399,7 +1515,7 @@
                     "_generator": {
                       "name": "bicep",
                       "version": "0.35.1.17967",
-                      "templateHash": "12063749272960522515"
+                      "templateHash": "9258352471943628424"
                     }
                   },
                   "parameters": {
@@ -1422,9 +1538,8 @@
                         "mode": "serial",
                         "batchSize": 1
                       },
-                      "condition": "[or(equals(tryGet(parameters('modelsConfig')[copyIndex()], 'aiservice'), null()), contains(parameters('cognitiveServiceName'), tryGet(parameters('modelsConfig')[copyIndex()], 'aiservice')))]",
                       "type": "Microsoft.CognitiveServices/accounts/deployments",
-                      "apiVersion": "2026-03-15-preview",
+                      "apiVersion": "2026-03-01",
                       "name": "[format('{0}/{1}', parameters('cognitiveServiceName'), parameters('modelsConfig')[copyIndex()].name)]",
                       "sku": {
                         "name": "[parameters('modelsConfig')[copyIndex()].sku]",
@@ -1462,7 +1577,7 @@
                   "cognitiveServiceName": "[variables('foundryAccountNames')[copyIndex()]]",
                   "cognitiveServicesId": "[resourceId('Microsoft.CognitiveServices/accounts', variables('foundryAccountNames')[copyIndex()])]",
                   "endpoint": "[reference(resourceId('Microsoft.CognitiveServices/accounts', variables('foundryAccountNames')[copyIndex()]), '2026-03-15-preview').endpoint]",
-                  "foundryProjectEndpoint": "[format('https://{0}.services.ai.azure.com/api/projects/{1}', variables('foundryAccountNames')[copyIndex()], format('{0}-{1}', parameters('foundryProjectName'), parameters('aiServicesConfig')[copyIndex()].name))]"
+                  "foundryProjectEndpoint": "[format('https://{0}.services.ai.azure.com/api/projects/{1}', variables('foundryAccountNames')[copyIndex()], variables('foundryProjectNames')[copyIndex()])]"
                 }
               }
             }
@@ -1470,7 +1585,6 @@
         }
       },
       "dependsOn": [
-        "apim",
         "appInsightsModule",
         "lawModule"
       ]
@@ -23306,6 +23420,14 @@
     "appInsightsName": {
       "type": "string",
       "value": "[reference('appInsightsModule').outputs.name.value]"
+    },
+    "pricingTableName": {
+      "type": "string",
+      "value": "PRICING_CL"
+    },
+    "subscriptionQuotaTableName": {
+      "type": "string",
+      "value": "SUBSCRIPTION_QUOTA_CL"
     },
     "apimSubscriptions": {
       "type": "array",

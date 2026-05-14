@@ -23,16 +23,28 @@ import sys
 from collections import defaultdict
 from datetime import datetime
 
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import pandas as pd
+try:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import pandas as pd
+    OPTIONAL_DEPENDENCY_ERROR = None
+except ModuleNotFoundError as exc:
+    matplotlib = None
+    plt = None
+    pd = None
+    OPTIONAL_DEPENDENCY_ERROR = exc
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 DEPLOYMENT_NAME = "multi-model-failover"
-RESOURCE_GROUP = f"lab-{DEPLOYMENT_NAME}"
+PROJECT_NAME = os.environ.get("PROJECT_NAME", "ict-apim")
+SUBPROJECT_NAME = os.environ.get("SUBPROJECT_NAME", DEPLOYMENT_NAME)
+RESOURCE_NUMBER = os.environ.get("RESOURCE_NUMBER", "001")
+TENANT_NAME = os.environ.get("TENANT_NAME", "mpsvcrtest")
+RESOURCE_GROUP = os.environ.get("RESOURCE_GROUP_NAME") or os.environ.get("RESOURCE_GROUP") or f"rg-{PROJECT_NAME}-{SUBPROJECT_NAME}-{RESOURCE_NUMBER}-{TENANT_NAME}"
+APIM_NAME = os.environ.get("APIM_NAME", "")
 INFERENCE_API_PATH = "inference"
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CHARTS_DIR = os.path.join(SCRIPT_DIR, "scenario-charts")
@@ -60,77 +72,144 @@ PRODUCT_COLORS = {"finance": "#2196F3", "marketing": "#FF9800", "hr": "#4CAF50",
 MODEL_COLORS = {"gpt-4.1-nano": "#9C27B0", "gpt-4.1": "#E91E63", "gpt-5.2": "#00BCD4"}
 
 
+def run_az(args):
+    """Run Azure CLI with resilient UTF-8 decoding."""
+    return subprocess.run(
+        ["az", *args],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+
+def get_group_deployment(resource_group, deployment_name):
+    result = run_az([
+        "deployment", "group", "show",
+        "--name", deployment_name,
+        "-g", resource_group,
+        "-o", "json",
+    ])
+    if result.returncode != 0:
+        return None
+
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+
+
+def discover_deployment_resource_group(deployment_name, current_resource_group):
+    """Find the resource group that contains the named group deployment."""
+    result = run_az(["group", "list", "--query", "[].name", "-o", "tsv"])
+    if result.returncode != 0:
+        return None
+
+    for resource_group in result.stdout.splitlines():
+        resource_group = resource_group.strip()
+        if not resource_group or resource_group == current_resource_group:
+            continue
+
+        result = run_az([
+            "deployment", "group", "show",
+            "--name", deployment_name,
+            "-g", resource_group,
+            "--query", "properties.provisioningState",
+            "-o", "tsv",
+        ])
+        if result.returncode == 0:
+            return resource_group
+
+    return None
+
+
+def get_workspace_name(resource_group):
+    result = run_az([
+        "resource", "list", "-g", resource_group,
+        "--resource-type", "Microsoft.OperationalInsights/workspaces",
+        "--query", "[0].name",
+        "-o", "tsv",
+    ])
+    ws_name = result.stdout.strip()
+    if ws_name:
+        return ws_name
+
+    sub_id = run_az(["account", "show", "--query", "id", "-o", "tsv"]).stdout.strip()
+    ws_resp = run_az([
+        "rest", "--method", "get",
+        "--url", f"https://management.azure.com/subscriptions/{sub_id}/resourceGroups/{resource_group}/providers/Microsoft.OperationalInsights/workspaces?api-version=2023-09-01",
+        "--query", "value[0].name",
+        "-o", "tsv",
+    ])
+    return ws_resp.stdout.strip()
+
+
 def get_deployment_outputs():
     """Fetch deployment outputs from Azure, or fall back to APIM REST API."""
+    global RESOURCE_GROUP
     print("🔍 Discovering deployment outputs...")
 
     # Try deployment outputs first
-    result = subprocess.run(
-        ["az", "deployment", "group", "show",
-         "--name", DEPLOYMENT_NAME, "-g", RESOURCE_GROUP, "-o", "json"],
-        capture_output=True, text=True
-    )
-    if result.returncode == 0:
-        try:
-            deployment = json.loads(result.stdout)
-            outputs = deployment.get("properties", {}).get("outputs", {})
-            if outputs and "apimResourceGatewayURL" in outputs:
-                # Get workspace name (need it for ARM query)
-                ws_result = subprocess.run(
-                    ["az", "resource", "list", "-g", RESOURCE_GROUP,
-                     "--resource-type", "Microsoft.OperationalInsights/workspaces",
-                     "--query", "[0].name", "-o", "tsv"],
-                    capture_output=True, text=True
-                )
-                ws_name = ws_result.stdout.strip()
-                if not ws_name:
-                    # fallback
-                    sub_id = subprocess.run(["az", "account", "show", "--query", "id", "-o", "tsv"],
-                                            capture_output=True, text=True).stdout.strip()
-                    ws_resp = subprocess.run(
-                        ["az", "rest", "--method", "get",
-                         "--url", f"https://management.azure.com/subscriptions/{sub_id}/resourceGroups/{RESOURCE_GROUP}/providers/Microsoft.OperationalInsights/workspaces?api-version=2023-09-01",
-                         "--query", "value[0].name", "-o", "tsv"],
-                        capture_output=True, text=True
-                    )
-                    ws_name = ws_resp.stdout.strip()
-                return {
-                    "gateway_url": outputs["apimResourceGatewayURL"]["value"],
-                    "app_insights": outputs["appInsightsName"]["value"],
-                    "log_analytics_workspace": ws_name,
-                    "subscriptions": outputs["apimSubscriptions"]["value"],
-                }
-        except (json.JSONDecodeError, KeyError):
-            pass
+    deployment = get_group_deployment(RESOURCE_GROUP, DEPLOYMENT_NAME)
+    if not deployment:
+        discovered_resource_group = discover_deployment_resource_group(DEPLOYMENT_NAME, RESOURCE_GROUP)
+        if discovered_resource_group:
+            print(f"  ℹ️  Found deployment '{DEPLOYMENT_NAME}' in resource group '{discovered_resource_group}'")
+            RESOURCE_GROUP = discovered_resource_group
+            deployment = get_group_deployment(RESOURCE_GROUP, DEPLOYMENT_NAME)
+
+    properties = deployment.get("properties") if isinstance(deployment, dict) else {}
+    outputs = properties.get("outputs", {}) if isinstance(properties, dict) else {}
+    if outputs and "apimResourceGatewayURL" in outputs:
+        return {
+            "gateway_url": outputs["apimResourceGatewayURL"]["value"],
+            "app_insights": outputs["appInsightsName"]["value"],
+            "log_analytics_workspace": get_workspace_name(RESOURCE_GROUP),
+            "subscriptions": outputs["apimSubscriptions"]["value"],
+        }
 
     print("  ⚠️  Deployment outputs not available, discovering via REST API...")
 
     # Discover APIM
-    result = subprocess.run(
-        ["az", "resource", "list", "-g", RESOURCE_GROUP,
-         "--resource-type", "Microsoft.ApiManagement/service", "--query", "[0]", "-o", "json"],
-        capture_output=True, text=True
-    )
-    apim = json.loads(result.stdout)
+    if APIM_NAME:
+        sub_id = run_az(["account", "show", "--query", "id", "-o", "tsv"]).stdout.strip()
+        apim = {
+            "name": APIM_NAME,
+            "id": f"/subscriptions/{sub_id}/resourceGroups/{RESOURCE_GROUP}/providers/Microsoft.ApiManagement/service/{APIM_NAME}",
+        }
+    else:
+        result = run_az([
+            "resource", "list", "-g", RESOURCE_GROUP,
+            "--resource-type", "Microsoft.ApiManagement/service",
+            "--query", "[0]",
+            "-o", "json",
+        ])
+        try:
+            apim = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            apim = None
+
+    if not apim:
+        print("❌ Could not discover APIM service. Pass --resource-group or set APIM_NAME.")
+        sys.exit(1)
+
     gateway_url = f"https://{apim['name']}.azure-api.net"
 
     # Get subscription keys
-    result = subprocess.run(
-        ["az", "rest", "--method", "get",
-         "--url", f"https://management.azure.com{apim['id']}/subscriptions?api-version=2024-05-01"],
-        capture_output=True, text=True
-    )
+    result = run_az([
+        "rest", "--method", "get",
+        "--url", f"https://management.azure.com{apim['id']}/subscriptions?api-version=2024-05-01",
+    ])
     subs_data = json.loads(result.stdout)
     subscriptions = []
     for sub in subs_data.get("value", []):
         name = sub["name"]
         if name == "master":
             continue
-        result2 = subprocess.run(
-            ["az", "rest", "--method", "post",
-             "--url", f"https://management.azure.com{sub['id']}/listSecrets?api-version=2024-05-01"],
-            capture_output=True, text=True
-        )
+        result2 = run_az([
+            "rest", "--method", "post",
+            "--url", f"https://management.azure.com{sub['id']}/listSecrets?api-version=2024-05-01",
+        ])
         secrets = json.loads(result2.stdout)
         subscriptions.append({
             "name": name,
@@ -139,25 +218,16 @@ def get_deployment_outputs():
         })
 
     # Get App Insights
-    result = subprocess.run(
-        ["az", "resource", "list", "-g", RESOURCE_GROUP,
-         "--resource-type", "Microsoft.Insights/components", "--query", "[0].name", "-o", "tsv"],
-        capture_output=True, text=True
-    )
+    result = run_az([
+        "resource", "list", "-g", RESOURCE_GROUP,
+        "--resource-type", "Microsoft.Insights/components",
+        "--query", "[0].name",
+        "-o", "tsv",
+    ])
     app_insights = result.stdout.strip()
 
     # Get Log Analytics workspace name
-    sub_id_val = subprocess.run(
-        ["az", "account", "show", "--query", "id", "-o", "tsv"],
-        capture_output=True, text=True
-    ).stdout.strip()
-    result = subprocess.run(
-        ["az", "rest", "--method", "get",
-         "--url", f"https://management.azure.com/subscriptions/{sub_id_val}/resourceGroups/{RESOURCE_GROUP}/providers/Microsoft.OperationalInsights/workspaces?api-version=2023-09-01",
-         "--query", "value[0].name", "-o", "tsv"],
-        capture_output=True, text=True
-    )
-    ws_name = result.stdout.strip()
+    ws_name = get_workspace_name(RESOURCE_GROUP)
 
     return {
         "gateway_url": gateway_url,
@@ -170,12 +240,12 @@ def get_deployment_outputs():
 def run_app_insights_query(app_insights_name, query, label=""):
     """Run a KQL query against App Insights."""
     print(f"  📊 Querying: {label}...")
-    result = subprocess.run(
-        ["az", "monitor", "app-insights", "query",
-         "--app", app_insights_name, "-g", RESOURCE_GROUP,
-         "--analytics-query", query],
-        capture_output=True, text=True
-    )
+    result = run_az([
+        "monitor", "app-insights", "query",
+        "--app", app_insights_name,
+        "-g", RESOURCE_GROUP,
+        "--analytics-query", query,
+    ])
     if result.returncode != 0:
         print(f"  ⚠️  Query failed: {result.stderr[:200]}")
         return None
@@ -200,10 +270,7 @@ def run_log_analytics_query(workspace_name, query, label=""):
         print(f"  ⚠️  No workspace name provided, skipping query")
         return None
 
-    sub_id = subprocess.run(
-        ["az", "account", "show", "--query", "id", "-o", "tsv"],
-        capture_output=True, text=True
-    ).stdout.strip()
+    sub_id = run_az(["account", "show", "--query", "id", "-o", "tsv"]).stdout.strip()
 
     url = (f"https://management.azure.com/subscriptions/{sub_id}/resourceGroups/{RESOURCE_GROUP}"
            f"/providers/Microsoft.OperationalInsights/workspaces/{workspace_name}"
@@ -220,10 +287,7 @@ def run_log_analytics_query(workspace_name, query, label=""):
         tmp_path = f.name
 
     try:
-        result = subprocess.run(
-            ["az", "rest", "--method", "post", "--url", url, "--body", f"@{tmp_path}"],
-            capture_output=True, text=True
-        )
+        result = run_az(["rest", "--method", "post", "--url", url, "--body", f"@{tmp_path}"])
     finally:
         os.unlink(tmp_path)
 
@@ -688,8 +752,8 @@ llmLogsWithSubscriptionId
 | extend InputCost = PromptTokens * InputTokensPrice
 | extend OutputCost = CompletionTokens * OutputTokensPrice
 | summarize InputCost = sum(InputCost), OutputCost = sum(OutputCost) by SubscriptionName
-| extend TotalCost = (InputCost + OutputCost) / 1000
-| project SubscriptionName, InputCost = InputCost / 1000, OutputCost = OutputCost / 1000, TotalCost
+| extend TotalCost = (InputCost + OutputCost) / 1000000.0
+| project SubscriptionName, InputCost = InputCost / 1000000.0, OutputCost = OutputCost / 1000000.0, TotalCost
 """
     df_cost_sub = run_log_analytics_query(config["log_analytics_workspace"], query_cost, "Cost by subscription")
 
@@ -704,8 +768,8 @@ llmHeaderLogs
     | summarize arg_max(TimeGenerated, *) by Model
     | project Model, InputTokensPrice, OutputTokensPrice
 ) on $left.DeploymentName == $right.Model
-| extend InputCost = PromptTokens * InputTokensPrice / 1000
-| extend OutputCost = CompletionTokens * OutputTokensPrice / 1000
+| extend InputCost = PromptTokens * InputTokensPrice / 1000000.0
+| extend OutputCost = CompletionTokens * OutputTokensPrice / 1000000.0
 | summarize InputCost = sum(InputCost), OutputCost = sum(OutputCost), TotalTokens = sum(TotalTokens) by DeploymentName
 | extend TotalCost = InputCost + OutputCost
 | order by TotalCost desc
@@ -726,7 +790,7 @@ llmLogsWithSubscriptionId
     | summarize arg_max(TimeGenerated, *) by Model
     | project Model, InputTokensPrice, OutputTokensPrice
 ) on $left.DeploymentName == $right.Model
-| extend TotalCost = (PromptTokens * InputTokensPrice + CompletionTokens * OutputTokensPrice) / 1000
+| extend TotalCost = (PromptTokens * InputTokensPrice + CompletionTokens * OutputTokensPrice) / 1000000.0
 | summarize TotalCost = sum(TotalCost) by SubscriptionName, DeploymentName
 | order by SubscriptionName, DeploymentName
 """
@@ -746,7 +810,7 @@ llmLogsWithSubscriptionId
     | summarize arg_max(TimeGenerated, *) by Model
     | project Model, InputTokensPrice, OutputTokensPrice
 ) on $left.DeploymentName == $right.Model
-| extend TotalCost = (PromptTokens * InputTokensPrice + CompletionTokens * OutputTokensPrice) / 1000
+| extend TotalCost = (PromptTokens * InputTokensPrice + CompletionTokens * OutputTokensPrice) / 1000000.0
 | summarize TotalCost = sum(TotalCost) by SubscriptionName
 | join kind=inner (
     SUBSCRIPTION_QUOTA_CL
@@ -1047,7 +1111,7 @@ def verify_quota_enforcement(config, timespan, load_test_results):
     charts.append(cp)
 
     # ── 4. Corroborate with gateway logs ────────────────────────────────
-    ws_name = config.get("workspace_name", "")
+    ws_name = config.get("log_analytics_workspace", "")
     if ws_name:
         query = f"""
 ApiManagementGatewayLogs
@@ -1059,11 +1123,11 @@ ApiManagementGatewayLogs
 """
         print(f"  📊 Querying LAW: 429 responses by subscription...")
         rows = run_log_analytics_query(ws_name, query, "429 by subscription")
-        if rows:
+        if rows is not None and not rows.empty:
             parts.append("\n**Gateway Log Corroboration (429 responses in APIM logs):**\n")
             parts.append("| Subscription | 429 Count |")
             parts.append("|-------------|-----------|")
-            for row in rows:
+            for row in rows.to_dict("records"):
                 parts.append(f"| {row.get('sub_name', '')} | {row.get('count_', 0)} |")
             parts.append("")
 
@@ -1151,10 +1215,25 @@ def generate_report(scenarios, load_test_results):
 
 
 def main():
+    global RESOURCE_GROUP, DEPLOYMENT_NAME, APIM_NAME
     parser = argparse.ArgumentParser(description="AI Gateway Scenario Verification")
     parser.add_argument("--timespan", default="PT1H",
                         help="KQL timespan for queries (default: PT1H = 1 hour)")
+    parser.add_argument("--resource-group", default=RESOURCE_GROUP,
+                        help=f"Resource group containing the deployment/APIM (default: {RESOURCE_GROUP})")
+    parser.add_argument("--deployment-name", default=DEPLOYMENT_NAME,
+                        help=f"Azure deployment name to read outputs from (default: {DEPLOYMENT_NAME})")
+    parser.add_argument("--apim-name", default=APIM_NAME,
+                        help="Existing APIM service name to use when deployment outputs are unavailable")
     args = parser.parse_args()
+    if OPTIONAL_DEPENDENCY_ERROR:
+        raise SystemExit(
+            f"Missing Python dependency: {OPTIONAL_DEPENDENCY_ERROR.name}. "
+            "Install lab dependencies with: pip install -r ../../requirements.txt"
+        )
+    RESOURCE_GROUP = args.resource_group
+    DEPLOYMENT_NAME = args.deployment_name
+    APIM_NAME = args.apim_name
 
     ensure_charts_dir()
     config = get_deployment_outputs()

@@ -8,6 +8,7 @@ Usage:
     python3 load-test.py                      # auto-discover from Azure deployment
     python3 load-test.py --runs 200           # custom run count
     python3 load-test.py --concurrency 10     # custom concurrency
+    python3 load-test.py --resource-group rg-aig-mpsv
 """
 
 import argparse
@@ -21,17 +22,21 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
-import requests as req
-
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 DEPLOYMENT_NAME = "multi-model-failover"
-RESOURCE_GROUP = f"lab-{DEPLOYMENT_NAME}"
+PROJECT_NAME = os.environ.get("PROJECT_NAME", "ict-apim")
+SUBPROJECT_NAME = os.environ.get("SUBPROJECT_NAME", DEPLOYMENT_NAME)
+RESOURCE_NUMBER = os.environ.get("RESOURCE_NUMBER", "001")
+TENANT_NAME = os.environ.get("TENANT_NAME", "mpsvcrtest")
+RESOURCE_GROUP = os.environ.get("RESOURCE_GROUP_NAME") or os.environ.get("RESOURCE_GROUP") or f"rg-{PROJECT_NAME}-{SUBPROJECT_NAME}-{RESOURCE_NUMBER}-{TENANT_NAME}"
+APIM_NAME = os.environ.get("APIM_NAME", "")
 INFERENCE_API_PATH = "inference"
 API_VERSION = "2025-03-01-preview"
 
 MODELS = ["gpt-4.1-nano", "gpt-4.1"]
+req = None
 
 # Per-product TPM limits as configured in the deployment (products-policy.xml)
 PRODUCT_TPM_LIMITS = {
@@ -54,53 +59,100 @@ PROMPTS = [
 ]
 
 
-def get_deployment_outputs():
+def run_az(args):
+    """Run Azure CLI with resilient UTF-8 decoding."""
+    return subprocess.run(
+        ["az", *args],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+
+def get_group_deployment(resource_group, deployment_name):
+    result = run_az([
+        "deployment", "group", "show",
+        "--name", deployment_name,
+        "-g", resource_group,
+        "-o", "json",
+    ])
+    if result.returncode != 0:
+        return None
+
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+
+
+def discover_deployment_resource_group(deployment_name, current_resource_group):
+    """Find the resource group that contains the named group deployment."""
+    result = run_az(["group", "list", "--query", "[].name", "-o", "tsv"])
+    if result.returncode != 0:
+        return None
+
+    for resource_group in result.stdout.splitlines():
+        resource_group = resource_group.strip()
+        if not resource_group or resource_group == current_resource_group:
+            continue
+
+        result = run_az([
+            "deployment", "group", "show",
+            "--name", deployment_name,
+            "-g", resource_group,
+            "--query", "properties.provisioningState",
+            "-o", "tsv",
+        ])
+        if result.returncode == 0:
+            return resource_group
+
+    return None
+
+
+def get_deployment_outputs(resource_group, deployment_name, apim_name=""):
     """Fetch deployment outputs from Azure, or fall back to APIM REST API."""
     print("🔍 Discovering deployment outputs from Azure...")
 
     # Try deployment outputs first
-    result = subprocess.run(
-        ["az", "deployment", "group", "show",
-         "--name", DEPLOYMENT_NAME, "-g", RESOURCE_GROUP, "-o", "json"],
-        capture_output=True, text=True
-    )
-    if result.returncode == 0:
-        try:
-            deployment = json.loads(result.stdout)
-            outputs = deployment.get("properties", {}).get("outputs", {})
-            if outputs and "apimResourceGatewayURL" in outputs:
-                gateway_url = outputs["apimResourceGatewayURL"]["value"]
-                subscriptions = outputs["apimSubscriptions"]["value"]
-                app_insights = outputs["appInsightsName"]["value"]
-                print(f"✅ Gateway: {gateway_url}")
-                print(f"✅ App Insights: {app_insights}")
-                print(f"✅ Subscriptions: {', '.join(s['name'] for s in subscriptions)}")
-                return gateway_url, subscriptions, app_insights
-        except (json.JSONDecodeError, KeyError):
-            pass
+    deployment = get_group_deployment(resource_group, deployment_name)
+    if not deployment:
+        discovered_resource_group = discover_deployment_resource_group(deployment_name, resource_group)
+        if discovered_resource_group:
+            print(f"  ℹ️  Found deployment '{deployment_name}' in resource group '{discovered_resource_group}'")
+            resource_group = discovered_resource_group
+            deployment = get_group_deployment(resource_group, deployment_name)
+
+    properties = deployment.get("properties") if isinstance(deployment, dict) else {}
+    outputs = properties.get("outputs", {}) if isinstance(properties, dict) else {}
+    if outputs and "apimResourceGatewayURL" in outputs:
+        gateway_url = outputs["apimResourceGatewayURL"]["value"]
+        subscriptions = outputs["apimSubscriptions"]["value"]
+        app_insights = outputs["appInsightsName"]["value"]
+        print(f"✅ Gateway: {gateway_url}")
+        print(f"✅ App Insights: {app_insights}")
+        print(f"✅ Subscriptions: {', '.join(s['name'] for s in subscriptions)}")
+        return gateway_url, subscriptions, app_insights
 
     # Fallback: discover APIM service name from resource group
     print("  ⚠️  Deployment outputs not available, discovering via APIM REST API...")
-    apim_name = None
 
-    result = subprocess.run(
-        ["az", "resource", "list", "-g", RESOURCE_GROUP,
-         "--resource-type", "Microsoft.ApiManagement/service", "--query", "[0].name", "-o", "tsv"],
-        capture_output=True, text=True
-    )
-    apim_name = result.stdout.strip()
+    if not apim_name:
+        result = run_az([
+            "resource", "list", "-g", resource_group,
+            "--resource-type", "Microsoft.ApiManagement/service",
+            "--query", "[0].name",
+            "-o", "tsv",
+        ])
+        apim_name = result.stdout.strip()
 
     if not apim_name:
         # Deployment might be in progress; try to find APIM via the subscription
-        sub_id = subprocess.run(
-            ["az", "account", "show", "--query", "id", "-o", "tsv"],
-            capture_output=True, text=True
-        ).stdout.strip()
-        result = subprocess.run(
-            ["az", "rest", "--method", "get",
-             "--url", f"https://management.azure.com/subscriptions/{sub_id}/resourceGroups/{RESOURCE_GROUP}/providers/Microsoft.ApiManagement/service?api-version=2024-05-01"],
-            capture_output=True, text=True
-        )
+        sub_id = run_az(["account", "show", "--query", "id", "-o", "tsv"]).stdout.strip()
+        result = run_az([
+            "rest", "--method", "get",
+            "--url", f"https://management.azure.com/subscriptions/{sub_id}/resourceGroups/{resource_group}/providers/Microsoft.ApiManagement/service?api-version=2024-05-01",
+        ])
         if result.returncode == 0:
             try:
                 services = json.loads(result.stdout).get("value", [])
@@ -110,33 +162,28 @@ def get_deployment_outputs():
                 pass
 
     if not apim_name:
-        print("❌ Could not discover APIM service. Ensure the deployment has completed.")
+        print("❌ Could not discover APIM service. Pass --resource-group or set APIM_NAME.")
         sys.exit(1)
 
     gateway_url = f"https://{apim_name}.azure-api.net"
-    sub_id = subprocess.run(
-        ["az", "account", "show", "--query", "id", "-o", "tsv"],
-        capture_output=True, text=True
-    ).stdout.strip()
-    apim_id = f"/subscriptions/{sub_id}/resourceGroups/{RESOURCE_GROUP}/providers/Microsoft.ApiManagement/service/{apim_name}"
+    sub_id = run_az(["account", "show", "--query", "id", "-o", "tsv"]).stdout.strip()
+    apim_id = f"/subscriptions/{sub_id}/resourceGroups/{resource_group}/providers/Microsoft.ApiManagement/service/{apim_name}"
 
     # Get subscription keys
-    result = subprocess.run(
-        ["az", "rest", "--method", "get",
-         "--url", f"https://management.azure.com{apim_id}/subscriptions?api-version=2024-05-01"],
-        capture_output=True, text=True
-    )
+    result = run_az([
+        "rest", "--method", "get",
+        "--url", f"https://management.azure.com{apim_id}/subscriptions?api-version=2024-05-01",
+    ])
     subs_data = json.loads(result.stdout)
     subscriptions = []
     for sub in subs_data.get("value", []):
         name = sub["name"]
         if name == "master":
             continue
-        result2 = subprocess.run(
-            ["az", "rest", "--method", "post",
-             "--url", f"https://management.azure.com{sub['id']}/listSecrets?api-version=2024-05-01"],
-            capture_output=True, text=True
-        )
+        result2 = run_az([
+            "rest", "--method", "post",
+            "--url", f"https://management.azure.com{sub['id']}/listSecrets?api-version=2024-05-01",
+        ])
         secrets = json.loads(result2.stdout)
         subscriptions.append({
             "name": name,
@@ -145,11 +192,12 @@ def get_deployment_outputs():
         })
 
     # Get App Insights name
-    result = subprocess.run(
-        ["az", "resource", "list", "-g", RESOURCE_GROUP,
-         "--resource-type", "Microsoft.Insights/components", "--query", "[0].name", "-o", "tsv"],
-        capture_output=True, text=True
-    )
+    result = run_az([
+        "resource", "list", "-g", resource_group,
+        "--resource-type", "Microsoft.Insights/components",
+        "--query", "[0].name",
+        "-o", "tsv",
+    ])
     app_insights = result.stdout.strip()
 
     print(f"✅ Gateway: {gateway_url}")
@@ -515,6 +563,12 @@ def main():
                         help="Total number of requests for standard mode (default: 90)")
     parser.add_argument("--concurrency", type=int, default=5,
                         help="Max concurrent requests (default: 5)")
+    parser.add_argument("--resource-group", default=RESOURCE_GROUP,
+                        help=f"Resource group containing the deployment/APIM (default: {RESOURCE_GROUP})")
+    parser.add_argument("--deployment-name", default=DEPLOYMENT_NAME,
+                        help=f"Azure deployment name to read outputs from (default: {DEPLOYMENT_NAME})")
+    parser.add_argument("--apim-name", default=APIM_NAME,
+                        help="Existing APIM service name to use when deployment outputs are unavailable")
     parser.add_argument("--finance-pct", type=int, default=50,
                         help="Percent of requests for Finance in standard mode (default: 50)")
     parser.add_argument("--marketing-pct", type=int, default=30,
@@ -523,7 +577,18 @@ def main():
                         help="Percent of requests for HR in standard mode (default: 20)")
     args = parser.parse_args()
 
-    gateway_url, subscriptions, app_insights = get_deployment_outputs()
+    global req
+    try:
+        import requests as requests_module
+    except ImportError:
+        raise SystemExit("Missing dependency 'requests'. Run: pip install -r ../../requirements.txt")
+    req = requests_module
+
+    gateway_url, subscriptions, app_insights = get_deployment_outputs(
+        args.resource_group,
+        args.deployment_name,
+        args.apim_name,
+    )
 
     if args.mode == "quota":
         results, product_summaries = run_quota_test(
