@@ -5,6 +5,18 @@
         "apimName": {
             "value": "<existing-apim-name>"
         },
+        "lawName": {
+            "value": "<log-analytics-workspace-name>"
+        },
+        "lawLocation": {
+            "value": "<azure-region>"
+        },
+        "appInsightsName": {
+            "value": "<application-insights-name>"
+        },
+        "appInsightsLocation": {
+            "value": "<azure-region>"
+        },
         "aiServicesConfig": {
             "value": [
                 {

@@ -116,6 +116,65 @@ az deployment group create \
 
 For PTU/PayGo spillover, use identical model deployment names on both Foundry accounts. Configure the PTU Foundry with `priority: 1` and the PayGo Foundry with `priority: 2`.
 
+### Resource naming
+
+By default, resources are named with a deterministic suffix:
+
+```text
+<prefix>-<resourceSuffix>
+```
+
+`resourceSuffix` is calculated from the subscription and resource group:
+
+```bicep
+uniqueString(subscription().id, resourceGroup().id)
+```
+
+Default names:
+
+| Resource | Default name |
+|----------|--------------|
+| Log Analytics | `workspace-<resourceSuffix>` |
+| Application Insights | `insights-<resourceSuffix>` |
+| Foundry account 1 | `foundry1-<resourceSuffix>` |
+| Foundry account 2 | `foundry2-<resourceSuffix>` |
+| Foundry project 1 | `<foundryProjectName>-foundry1` |
+| Foundry project 2 | `<foundryProjectName>-foundry2` |
+| APIM backend IDs | `foundry1`, `foundry2` |
+
+To use your own names, set them in `params.json` or `params.json.example`:
+
+```json
+{
+  "parameters": {
+    "lawName": {
+      "value": "my-law"
+    },
+    "appInsightsName": {
+      "value": "my-appinsights"
+    },
+    "aiServicesConfig": {
+      "value": [
+        {
+          "name": "foundry1",
+          "resourceName": "my-foundry-ptu",
+          "location": "swedencentral",
+          "priority": 1
+        },
+        {
+          "name": "foundry2",
+          "resourceName": "my-foundry-paygo",
+          "location": "eastus2",
+          "priority": 2
+        }
+      ]
+    }
+  }
+}
+```
+
+`name` is the logical APIM backend ID and must match `modelsConfig[*].aiservice`; `resourceName` is the actual Azure AI Foundry account name.
+
 ### 🚀 Get started
 
 Proceed by opening the [Jupyter notebook](multi-model-failover.ipynb), and follow the steps provided.
