@@ -639,6 +639,29 @@
     "lastCommitDate": "2026-02-04T13:09:52.736Z"
   },
   {
+    "id": "multi-model-failover",
+    "name": "Multi-Model Failover",
+    "architectureDiagram": "images/multi-model-failover.gif",
+    "categories": [
+      "Platform Capabilities",
+      "Governance & Responsible AI"
+    ],
+    "services": [
+      "Azure AI Foundry",
+      "Azure API Management",
+      "Azure Monitor",
+      "FinOps"
+    ],
+    "shortDescription": "Implement automatic failover between AI models with priority-based routing and FinOps cost controls.",
+    "detailedDescription": "Demonstrates multi-model failover using APIM backend pools with priority-based routing, retry policies with exponential backoff, circuit breaker patterns for unhealthy backends, built-in LLM logging, FinOps framework with per-product token rate limiting and cost quotas, and testing with Microsoft Agent Framework (MAF) agents.",
+    "authors": [
+      "mimarusa"
+    ],
+    "tags": [],
+    "githubPath": "https://github.com/michalmar/AI-gateway/tree/main/labs/multi-model-failover",
+    "lastCommitDate": "2026-05-14T12:21:09.152Z"
+  },
+  {
     "id": "openai-agents",
     "name": "OpenAI Agents",
     "architectureDiagram": "images/openai-agents.gif",
