@@ -1,0 +1,217 @@
+{
+  "version": "Notebook/1.0",
+  "items": [
+    {
+      "type": 9,
+      "content": {
+        "version": "KqlParameterItem/1.0",
+        "parameters": [
+          {
+            "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+            "version": "KqlParameterItem/1.0",
+            "name": "TimeRange",
+            "label": "Time Range",
+            "type": 4,
+            "isRequired": true,
+            "typeSettings": {
+              "selectableValues": [
+                { "durationMs": 3600000 },
+                { "durationMs": 14400000 },
+                { "durationMs": 43200000 },
+                { "durationMs": 86400000 },
+                { "durationMs": 604800000 },
+                { "durationMs": 2592000000 }
+              ],
+              "allowCustom": true
+            },
+            "value": {
+              "durationMs": 86400000
+            }
+          }
+        ],
+        "style": "pills",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces"
+      },
+      "name": "parameters - TimeRange"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## 💰 Cost Analysis\r\nCost tracking per department (APIM product subscription) compared against monthly quotas. Prices from PRICING_CL custom table (per 1M tokens)."
+      },
+      "name": "text - cost-header"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let llmLogs = ApiManagementGatewayLlmLog\r\n| where TimeGenerated >= startofmonth(now()) and TimeGenerated <= endofmonth(now())\r\n| where DeploymentName != '';\r\nlet logsWithSub = llmLogs\r\n| join kind=leftouter (\r\n    ApiManagementGatewayLogs\r\n    | where TimeGenerated >= startofmonth(now())\r\n    | summarize ApimSubscriptionId=take_any(ApimSubscriptionId) by CorrelationId\r\n) on CorrelationId\r\n| project SubscriptionName = ApimSubscriptionId, DeploymentName, PromptTokens, CompletionTokens;\r\nlogsWithSub\r\n| join kind=inner (\r\n    PRICING_CL\r\n    | summarize arg_max(TimeGenerated, *) by Model\r\n    | project Model, InputTokensPrice, OutputTokensPrice\r\n) on $left.DeploymentName == $right.Model\r\n| extend InputCost = PromptTokens * InputTokensPrice / 1000000.0\r\n| extend OutputCost = CompletionTokens * OutputTokensPrice / 1000000.0\r\n| summarize TotalCost = round(sum(InputCost + OutputCost), 4) by SubscriptionName\r\n| join kind=inner (\r\n    SUBSCRIPTION_QUOTA_CL\r\n    | summarize arg_max(TimeGenerated, *) by Subscription\r\n    | project Subscription, CostQuota\r\n) on $left.SubscriptionName == $right.Subscription\r\n| project Department = replace_string(SubscriptionName, 'subscription-', ''), CostQuota, TotalCost",
+        "size": 0,
+        "title": "Cost by Department vs Quota (Current Month)",
+        "timeContext": {
+          "durationMs": 2592000000
+        },
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "unstackedbar",
+        "chartSettings": {
+          "xAxis": "Department",
+          "yAxis": ["CostQuota", "TotalCost"],
+          "showLegend": true,
+          "seriesLabelSettings": [
+            { "seriesName": "CostQuota", "label": "Monthly Quota ($)" },
+            { "seriesName": "TotalCost", "label": "Actual Cost ($)" }
+          ]
+        }
+      },
+      "customWidth": "50",
+      "name": "query - cost-by-department"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let llmLogs = ApiManagementGatewayLlmLog\r\n| where TimeGenerated >= startofmonth(now()) and TimeGenerated <= endofmonth(now())\r\n| where DeploymentName != '';\r\nlet logsWithSub = llmLogs\r\n| join kind=leftouter (\r\n    ApiManagementGatewayLogs\r\n    | where TimeGenerated >= startofmonth(now())\r\n    | summarize ApimSubscriptionId=take_any(ApimSubscriptionId) by CorrelationId\r\n) on CorrelationId\r\n| project SubscriptionName = ApimSubscriptionId, DeploymentName, PromptTokens, CompletionTokens;\r\nlogsWithSub\r\n| join kind=inner (\r\n    PRICING_CL\r\n    | summarize arg_max(TimeGenerated, *) by Model\r\n    | project Model, InputTokensPrice, OutputTokensPrice\r\n) on $left.DeploymentName == $right.Model\r\n| extend Cost = (PromptTokens * InputTokensPrice + CompletionTokens * OutputTokensPrice) / 1000000.0\r\n| summarize TotalCost = round(sum(Cost), 4) by SubscriptionName\r\n| join kind=inner (\r\n    SUBSCRIPTION_QUOTA_CL\r\n    | summarize arg_max(TimeGenerated, *) by Subscription\r\n    | project Subscription, CostQuota\r\n) on $left.SubscriptionName == $right.Subscription\r\n| extend UsagePercent = round(TotalCost / CostQuota * 100, 1)\r\n| project Department = replace_string(SubscriptionName, 'subscription-', ''), UsagePercent\r\n| order by UsagePercent desc",
+        "size": 0,
+        "title": "Quota Usage % (Current Month)",
+        "timeContext": {
+          "durationMs": 2592000000
+        },
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "unstackedbar",
+        "chartSettings": {
+          "xAxis": "Department",
+          "yAxis": ["UsagePercent"],
+          "showLegend": true,
+          "ySettings": {
+            "numberFormatSettings": {
+              "unit": 1,
+              "options": { "style": "decimal" }
+            }
+          },
+          "seriesLabelSettings": [
+            { "seriesName": "UsagePercent", "label": "Quota Used (%)" }
+          ]
+        }
+      },
+      "customWidth": "50",
+      "name": "query - quota-percent"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let llmLogs = ApiManagementGatewayLlmLog\r\n| where DeploymentName != '';\r\nlet logsWithSub = llmLogs\r\n| join kind=leftouter (\r\n    ApiManagementGatewayLogs\r\n    | summarize ApimSubscriptionId=take_any(ApimSubscriptionId) by CorrelationId\r\n) on CorrelationId\r\n| project TimeGenerated, SubscriptionName = ApimSubscriptionId, DeploymentName, PromptTokens, CompletionTokens;\r\nlogsWithSub\r\n| join kind=inner (\r\n    PRICING_CL\r\n    | summarize arg_max(TimeGenerated, *) by Model\r\n    | project Model, InputTokensPrice, OutputTokensPrice\r\n) on $left.DeploymentName == $right.Model\r\n| extend Cost = (PromptTokens * InputTokensPrice + CompletionTokens * OutputTokensPrice) / 1000000.0\r\n| summarize TotalCost = round(sum(Cost), 4) by Department = replace_string(SubscriptionName, 'subscription-', ''), bin(TimeGenerated, 5m)\r\n| order by TimeGenerated asc",
+        "size": 0,
+        "title": "Cost Over Time by Department",
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "timechart",
+        "chartSettings": {
+          "showLegend": true
+        }
+      },
+      "name": "query - cost-over-time"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## 📊 Usage Analysis\r\nToken consumption and request volume broken down by model and department."
+      },
+      "name": "text - usage-header"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "ApiManagementGatewayLlmLog\r\n| where DeploymentName != ''\r\n| summarize Requests = count(), TotalTokens = sum(TotalTokens) by Model = DeploymentName\r\n| order by Requests desc",
+        "size": 0,
+        "title": "Requests & Tokens by Model",
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "unstackedbar",
+        "chartSettings": {
+          "xAxis": "Model",
+          "yAxis": ["Requests", "TotalTokens"],
+          "showLegend": true
+        }
+      },
+      "customWidth": "50",
+      "name": "query - requests-by-model"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "ApiManagementGatewayLlmLog\r\n| where DeploymentName != ''\r\n| join kind=leftouter (\r\n    ApiManagementGatewayLogs\r\n    | summarize ApimSubscriptionId=take_any(ApimSubscriptionId) by CorrelationId\r\n) on CorrelationId\r\n| summarize PromptTokens = sum(PromptTokens), CompletionTokens = sum(CompletionTokens)\r\n    by Department = replace_string(ApimSubscriptionId, 'subscription-', '')\r\n| order by PromptTokens desc",
+        "size": 0,
+        "title": "Token Usage by Department",
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "unstackedbar",
+        "chartSettings": {
+          "xAxis": "Department",
+          "yAxis": ["PromptTokens", "CompletionTokens"],
+          "showLegend": true,
+          "seriesLabelSettings": [
+            { "seriesName": "PromptTokens", "label": "Input Tokens" },
+            { "seriesName": "CompletionTokens", "label": "Output Tokens" }
+          ]
+        }
+      },
+      "customWidth": "50",
+      "name": "query - tokens-by-department"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## 🏗️ Infrastructure\r\nBackend routing distribution and API response status codes."
+      },
+      "name": "text - infra-header"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "ApiManagementGatewayLogs\r\n| where BackendId != ''\r\n| summarize Requests = count() by Backend = BackendId\r\n| order by Requests desc",
+        "size": 0,
+        "title": "Backend Distribution",
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "piechart"
+      },
+      "customWidth": "50",
+      "name": "query - backend-distribution"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "ApiManagementGatewayLogs\r\n| summarize Requests = count() by StatusCode = tostring(ResponseCode)\r\n| order by StatusCode asc",
+        "size": 0,
+        "title": "Response Status Codes",
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "unstackedbar",
+        "chartSettings": {
+          "xAxis": "StatusCode",
+          "yAxis": ["Requests"],
+          "showLegend": true
+        }
+      },
+      "customWidth": "50",
+      "name": "query - response-codes"
+    }
+  ],
+  "fallbackResourceIds": [
+    "{workspace-id}"
+  ],
+  "$schema": "https://github.com/Microsoft/Application-Insights-Workbooks/blob/master/schema/workbook.json"
+}

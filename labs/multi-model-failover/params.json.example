@@ -1,0 +1,143 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "apimName": {
+            "value": "<existing-apim-name>"
+        },
+        "aiServicesConfig": {
+            "value": [
+                {
+                    "name": "foundry1",
+                    "location": "swedencentral",
+                    "priority": 1
+                },
+                {
+                    "name": "foundry2",
+                    "location": "eastus2",
+                    "priority": 2
+                }
+            ]
+        },
+        "modelsConfig": {
+            "value": [
+                {
+                    "name": "gpt-4.1-nano",
+                    "aiservice": "foundry1",
+                    "publisher": "OpenAI",
+                    "version": "2025-04-14",
+                    "sku": "GlobalStandard",
+                    "capacity": 200,
+                    "inputTokensMeterSku": "gpt 4.1 nano Inp glbl",
+                    "outputTokensMeterSku": "gpt 4.1 nano Outp glbl"
+                },
+                {
+                    "name": "gpt-4.1-nano",
+                    "aiservice": "foundry2",
+                    "publisher": "OpenAI",
+                    "version": "2025-04-14",
+                    "sku": "GlobalStandard",
+                    "capacity": 200,
+                    "inputTokensMeterSku": "gpt 4.1 nano Inp glbl",
+                    "outputTokensMeterSku": "gpt 4.1 nano Outp glbl"
+                },
+                {
+                    "name": "gpt-5.2",
+                    "aiservice": "foundry1",
+                    "publisher": "OpenAI",
+                    "version": "2025-12-11",
+                    "sku": "GlobalStandard",
+                    "capacity": 200,
+                    "inputTokensMeterSku": "gpt 5.2 Inp glbl",
+                    "outputTokensMeterSku": "gpt 5.2 Outp glbl"
+                },
+                {
+                    "name": "gpt-5.2",
+                    "aiservice": "foundry2",
+                    "publisher": "OpenAI",
+                    "version": "2025-12-11",
+                    "sku": "GlobalStandard",
+                    "capacity": 200,
+                    "inputTokensMeterSku": "gpt 5.2 Inp glbl",
+                    "outputTokensMeterSku": "gpt 5.2 Outp glbl"
+                },
+                {
+                    "name": "gpt-4.1",
+                    "aiservice": "foundry1",
+                    "publisher": "OpenAI",
+                    "version": "2025-04-14",
+                    "sku": "GlobalStandard",
+                    "capacity": 200,
+                    "inputTokensMeterSku": "gpt 4.1 Inp glbl",
+                    "outputTokensMeterSku": "gpt 4.1 Outp glbl"
+                },
+                {
+                    "name": "gpt-4.1",
+                    "aiservice": "foundry2",
+                    "publisher": "OpenAI",
+                    "version": "2025-04-14",
+                    "sku": "GlobalStandard",
+                    "capacity": 200,
+                    "inputTokensMeterSku": "gpt 4.1 Inp glbl",
+                    "outputTokensMeterSku": "gpt 4.1 Outp glbl"
+                }
+            ]
+        },
+        "apimSubscriptionsConfig": {
+            "value": [
+                {
+                    "name": "subscription-finance",
+                    "displayName": "Finance Subscription",
+                    "product": "finance"
+                },
+                {
+                    "name": "subscription-marketing",
+                    "displayName": "Marketing Subscription",
+                    "product": "marketing"
+                },
+                {
+                    "name": "subscription-hr",
+                    "displayName": "HR Subscription",
+                    "product": "hr"
+                }
+            ]
+        },
+        "apimProductsConfig": {
+            "value": [
+                {
+                    "name": "finance",
+                    "displayName": "Finance Product",
+                    "tpm": 2000,
+                    "tokenQuota": 1500000,
+                    "tokenQuotaPeriod": "Monthly",
+                    "costQuota": 20
+                },
+                {
+                    "name": "marketing",
+                    "displayName": "Marketing Product",
+                    "tpm": 1000,
+                    "tokenQuota": 1000000,
+                    "tokenQuotaPeriod": "Monthly",
+                    "costQuota": 10
+                },
+                {
+                    "name": "hr",
+                    "displayName": "HR Product",
+                    "tpm": 500,
+                    "tokenQuota": 500000,
+                    "tokenQuotaPeriod": "Monthly",
+                    "costQuota": 5
+                }
+            ]
+        },
+        "inferenceAPIPath": {
+            "value": "inference"
+        },
+        "inferenceAPIType": {
+            "value": "AzureOpenAI"
+        },
+        "foundryProjectName": {
+            "value": "multi-model-failover"
+        }
+    }
+}

@@ -1,0 +1,40 @@
+<policies>
+    <inbound>
+        <base />
+        <set-backend-service backend-id="{backend-id}" />
+        <azure-openai-emit-token-metric namespace="aiusage">
+            <dimension name="Product" value="@(context.Product.Id)" />
+            <dimension name="Subscription ID" />
+            <dimension name="Model" value="@(context.Request.MatchedParameters.GetValueOrDefault("deployment-id", "unknown"))" />
+        </azure-openai-emit-token-metric>
+    </inbound>
+    <backend>
+        <!--Retry with exponential backoff on 429 (throttled) or 503 (unavailable). Count matches backends minus one to try all.-->
+        <retry count="2" interval="1" max-interval="10" delta="2" first-fast-retry="true" condition="@(context.Response.StatusCode == 429 || context.Response.StatusCode == 503)">
+            <set-backend-service backend-id="{backend-id}" />
+            <forward-request buffer-request-body="true" />
+        </retry>
+    </backend>
+    <outbound>
+        <base />
+    </outbound>
+    <on-error>
+        <base />
+        <choose>
+            <!--Return a generic error that does not reveal backend pool details.-->
+            <when condition="@(context.Response.StatusCode == 429)">
+                <return-response>
+                    <set-status code="429" reason="Too Many Requests" />
+                    <set-header name="Retry-After" exists-action="override">
+                        <value>10</value>
+                    </set-header>
+                </return-response>
+            </when>
+            <when condition="@(context.Response.StatusCode == 503)">
+                <return-response>
+                    <set-status code="503" reason="Service Unavailable" />
+                </return-response>
+            </when>
+        </choose>
+    </on-error>
+</policies>
