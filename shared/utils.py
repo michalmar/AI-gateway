@@ -193,20 +193,46 @@ def delete_resource(resource, resource_group_name):
         output = run(f"az keyvault delete -n {resource_name} -g {resource_group_name}", f"Key Vault '{resource_name}' deleted", f"Failed to delete Key Vault '{resource_name}'")
 
 def get_deployment_output(output, output_property, output_label = '', secure = False) -> str:
-    try:
-        deployment_output = output.json_data['properties']['outputs'][output_property]['value']
-
-        if output_label:
-            if secure:
-                print_info(f"{output_label}: ****{deployment_output[-4:]}")
-            else:
-                print_info(f"{output_label}: {deployment_output}")
-
-        return str(deployment_output)
-    except Exception as e:
-        error = f"Failed to retrieve output property: '{output_property}'\nError: {e}"
+    if not output.success or not isinstance(output.json_data, dict):
+        error = f"Failed to retrieve output property: '{output_property}'\nError: deployment output is not available."
         print_error(error)
         raise Exception(error)
+
+    properties = output.json_data.get('properties')
+    if not isinstance(properties, dict):
+        error = f"Failed to retrieve output property: '{output_property}'\nError: deployment response does not contain properties."
+        print_error(error)
+        raise Exception(error)
+
+    outputs = properties.get('outputs')
+    if not isinstance(outputs, dict):
+        provisioning_state = properties.get('provisioningState', 'Unknown')
+        error = f"Failed to retrieve output property: '{output_property}'\nError: deployment outputs are not available. Provisioning state: {provisioning_state}."
+        print_error(error)
+        raise Exception(error)
+
+    if output_property not in outputs:
+        available_outputs = ', '.join(outputs.keys()) if outputs else 'none'
+        error = f"Failed to retrieve output property: '{output_property}'\nAvailable outputs: {available_outputs}"
+        print_error(error)
+        raise Exception(error)
+
+    output_entry = outputs[output_property]
+    if not isinstance(output_entry, dict) or 'value' not in output_entry:
+        error = f"Failed to retrieve output property: '{output_property}'\nError: output entry does not contain a value."
+        print_error(error)
+        raise Exception(error)
+
+    deployment_output = output_entry['value']
+
+    if output_label:
+        if secure:
+            deployment_output_text = str(deployment_output)
+            print_info(f"{output_label}: ****{deployment_output_text[-4:]}")
+        else:
+            print_info(f"{output_label}: {deployment_output}")
+
+    return str(deployment_output)
 
 def print_response(response):
     print("Response headers: ", response.headers)
@@ -252,11 +278,11 @@ def run(command, ok_message = '', error_message = '', print_output = False, prin
     start_time = time.time()
 
     try:
-        completed_process = subprocess.run(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        completed_process = subprocess.run(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
         output_text = completed_process.stdout
         success = completed_process.returncode == 0
     except subprocess.CalledProcessError as e:
-        output_text = e.output.decode("utf-8")
+        output_text = e.output if isinstance(e.output, str) else e.output.decode("utf-8", errors="replace")
         success = False
 
     minutes, seconds = divmod(time.time() - start_time, 60)
@@ -362,4 +388,3 @@ def get_trace(apim_service_id, trace_id) -> str | None:
     output = run(f"az rest --method post --uri {apim_service_id}/gateways/managed/listTrace?api-version=2023-05-01-preview --body \"{str(request)}\"",
             "Retrieved trace details", "Failed to get the trace details")
     return output.json_data if output.success and output.json_data else None
-

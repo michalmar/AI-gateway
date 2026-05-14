@@ -34,19 +34,65 @@
 
 # %%
 import os, sys, json
+if sys.version_info < (3, 12):
+    raise SystemExit("Python 3.12 or later is required. Run: python3.12 multi-deploy.py")
+
 sys.path.insert(1, '../../shared')  # add the shared directory to the Python path
 import utils
 
+
+def print_deployment_failure_details(deployment_name, resource_group_name):
+    failed_operations_query = "[?properties.provisioningState=='Failed'].{resource:properties.targetResource.resourceName,type:properties.targetResource.resourceType,state:properties.provisioningState,error:properties.statusMessage.error.message}"
+    utils.run(
+        f'az deployment operation group list --resource-group {resource_group_name} --name {deployment_name} --query "{failed_operations_query}" -o table',
+        "Retrieved failed deployment operations",
+        "Failed to retrieve deployment operation details",
+        print_output=True
+    )
+
+
+def ensure_deployment_has_outputs(output, deployment_name, resource_group_name):
+    if not output.success or not isinstance(output.json_data, dict) or not output.json_data:
+        utils.print_error(f"Deployment '{deployment_name}' could not be retrieved.")
+        sys.exit(1)
+
+    properties = output.json_data.get('properties')
+    if not isinstance(properties, dict):
+        utils.print_error(f"Deployment '{deployment_name}' response does not contain properties.")
+        sys.exit(1)
+
+    provisioning_state = properties.get('provisioningState', 'Unknown')
+    if provisioning_state != 'Succeeded':
+        utils.print_error(f"Deployment '{deployment_name}' is '{provisioning_state}', not 'Succeeded'.")
+        print_deployment_failure_details(deployment_name, resource_group_name)
+        sys.exit(1)
+
+    outputs = properties.get('outputs')
+    if not isinstance(outputs, dict) or not outputs:
+        utils.print_error(f"Deployment '{deployment_name}' succeeded but returned no outputs.")
+        print_deployment_failure_details(deployment_name, resource_group_name)
+        sys.exit(1)
+
+
 deployment_name = os.path.basename(os.path.dirname(os.path.abspath(__file__)))
-resource_group_name = f"lab-{deployment_name}"
+project_name = os.environ.get("PROJECT_NAME", "ict-apim")
+subproject_name = os.environ.get("SUBPROJECT_NAME", deployment_name)
+dcr_subproject_name = os.environ.get("DCR_SUBPROJECT_NAME", "mf")
+resource_number = os.environ.get("RESOURCE_NUMBER", "001")
+secondary_resource_number = os.environ.get("SECONDARY_RESOURCE_NUMBER", "002")
+tenant_name = os.environ.get("TENANT_NAME", "mpsvcrtest")
+
+
+
+resource_group_name = "rg-aig-mpsv" # f"rg-{project_name}-{subproject_name}-{resource_number}-{tenant_name}"
 resource_group_location = "westeurope"
 
 # Existing APIM instance (must have system-assigned managed identity enabled)
-apim_name = os.environ.get("APIM_NAME", "")
+apim_name = os.environ.get("APIM_NAME", f"apim-aig-mpsv-test1")
 
 # AI Services - two Foundry accounts created by Bicep for failover diversity
-aiservices_config = [{"name": "foundry1", "location": "swedencentral", "priority": 1},
-                     {"name": "foundry2", "location": "eastus2", "priority": 2}]
+aiservices_config = [{"name": "foundry1", "location": "westeurope", "priority": 1, "resourceNumber": resource_number},
+                     {"name": "foundry2", "location": "swedencentral", "priority": 2, "resourceNumber": secondary_resource_number}]
 
 # Models - deployed on both Foundries with aiservice targeting
 # For PTU: change sku to "ProvisionedManaged" on the PTU foundry entries
@@ -82,13 +128,12 @@ apim_subscriptions_config = [
 inference_api_path = "inference"
 inference_api_type = "AzureOpenAI"
 inference_api_version = "2025-03-01-preview"
-foundry_project_name = deployment_name
 
 currency_code = 'USD'
 
 utils.print_ok('Notebook initialized')
 
-DEPLOY = False
+DEPLOY = True
 if (DEPLOY):
 
     print(f"Deployment Name: {deployment_name}")
@@ -114,14 +159,19 @@ if (DEPLOY):
         "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
         "contentVersion": "1.0.0.0",
         "parameters": {
+            "projectName": { "value": project_name },
+            "subprojectName": { "value": subproject_name },
+            "dcrSubprojectName": { "value": dcr_subproject_name },
+            "resourceNumber": { "value": resource_number },
+            "secondaryResourceNumber": { "value": secondary_resource_number },
+            "tenantName": { "value": tenant_name },
             "apimName": { "value": apim_name },
             "aiServicesConfig": { "value": aiservices_config },
             "modelsConfig": { "value": models_config },
             "apimSubscriptionsConfig": { "value": apim_subscriptions_config },
             "apimProductsConfig": { "value": apim_products_config },
             "inferenceAPIPath": { "value": inference_api_path },
-            "inferenceAPIType": { "value": inference_api_type },
-            "foundryProjectName": { "value": foundry_project_name }
+            "inferenceAPIType": { "value": inference_api_type }
         }
     }
 
@@ -132,9 +182,13 @@ if (DEPLOY):
     # Run the deployment
     output = utils.run(f"az deployment group create --name {deployment_name} --resource-group {resource_group_name} --template-file main.bicep --parameters params.json",
         f"Deployment '{deployment_name}' succeeded", f"Deployment '{deployment_name}' failed")
+    if not output.success:
+        print_deployment_failure_details(deployment_name, resource_group_name)
+        sys.exit(1)
 
     # Obtain all of the outputs from the deployment
     output = utils.run(f"az deployment group show --name {deployment_name} -g {resource_group_name}", f"Retrieved deployment: {deployment_name}", f"Failed to retrieve deployment: {deployment_name}")
+    ensure_deployment_has_outputs(output, deployment_name, resource_group_name)
 
     if output.success and output.json_data:
         apim_resource_gateway_url = utils.get_deployment_output(output, 'apimResourceGatewayURL', 'APIM API Gateway URL')
@@ -153,113 +207,3 @@ if (DEPLOY):
             subscription_key = subscription['key']
             utils.print_info(f"Subscription Name: {subscription_name}")
             utils.print_info(f"Subscription Key: ****{subscription_key[-4:]}")
-
-
-
-
-app_insights_name = "insights-g3mjvytixvcoc"
-
-import pandas as pd
-
-query = (
-    "customMetrics "
-    "| where name == 'Total Tokens' "
-    "| where timestamp >= ago(4h) "
-    "| extend parsedCustomDimensions = parse_json(customDimensions) "
-    "| extend apimSubscription = tostring(parsedCustomDimensions.['Subscription ID']) "
-    "| extend agentID = tostring(parsedCustomDimensions.['Agent ID']) "
-    "| summarize TotalValue = sum(value) by apimSubscription, bin(timestamp, 1m), agentID "
-    "| order by timestamp asc"
-)
-print("Running the following Kusto query against App Insights:")
-print(query)
-output = utils.run(f'az monitor app-insights query --app {app_insights_name} -g {resource_group_name} --analytics-query "{query}"',
-    f"App Insights query succeeded", f"App Insights query failed")
-
-if output.success and output.json_data:
-    table = output.json_data['tables'][0]
-    df = pd.DataFrame(table.get("rows"), columns = [col.get("name") for col in table.get('columns')])
-    df['timestamp'] = pd.to_datetime(df['timestamp']).dt.strftime('%H:%M')
-    df.head()
-
-    # import matplotlib.pyplot as plt
-    # import matplotlib as mpl
-    # mpl.rcParams['figure.figsize'] = [15, 7]
-    # if df.empty:
-    #     print("No data to plot")
-    # else:
-    #     df_pivot = df.pivot(index='timestamp', columns='apimSubscription', values='TotalValue')
-    #     ax = df_pivot.plot(kind='bar', stacked=True)
-    #     plt.title('Total token usage over time by APIM Subscription')
-    #     plt.xlabel('Time')
-    #     plt.ylabel('Tokens')
-    #     plt.legend(title='APIM Subscription')
-    #     plt.show()
-
-# %% [markdown]
-# ### 📊 Query Azure Monitor for cost logs
-#
-# This query joins LLM gateway logs with the pricing table and subscription quota table
-# to calculate per-subscription costs over time — matching the Cost Analysis workbook (query-1).
-# Uses the Log Analytics REST API directly for reliable query execution.
-
-# %%
-log_analytics_workspace_id = "f8839ea4-23f3-41cf-a7c3-c8512d2463e6"
-
-cost_query = (
-    "let llmHeaderLogs = ApiManagementGatewayLlmLog "
-    "| where DeploymentName != ''; "
-    "let llmLogsWithSubscriptionId = llmHeaderLogs "
-    "| join kind=leftouter ApiManagementGatewayLogs on CorrelationId "
-    "| project "
-    "    TimeGenerated, SubscriptionName = ApimSubscriptionId, DeploymentName, PromptTokens, CompletionTokens, TotalTokens; "
-    "llmLogsWithSubscriptionId "
-    "| join kind=inner ( "
-    "    PRICING_CL "
-    "    | summarize arg_max(TimeGenerated, *) by Model "
-    "    | project Model, InputTokensPrice = coalesce(InputTokensPrice, 0.0), OutputTokensPrice = coalesce(OutputTokensPrice, 0.0) "
-    "    ) "
-    "    on $left.DeploymentName == $right.Model "
-    "| extend InputCost = PromptTokens * InputTokensPrice "
-    "| extend OutputCost = CompletionTokens * OutputTokensPrice "
-    "| summarize "
-    "    InputCost = sum(InputCost), OutputCost = sum(OutputCost) "
-    "    by SubscriptionName, bin(TimeGenerated, 1m) "
-    "| extend TotalCost = (InputCost + OutputCost) / 1000 "
-    "| project TimeGenerated, SubscriptionName, TotalCost"
-)
-
-print("\n📊 Running cost analysis query against Log Analytics...")
-import subprocess
-rest_cmd = (
-    f'az rest --method post '
-    f'--url "https://api.loganalytics.io/v1/workspaces/{log_analytics_workspace_id}/query" '
-    f'--headers "Content-Type=application/json" '
-    f'--resource "https://api.loganalytics.io" '
-    f'--body @-'
-)
-
-query_body = json.dumps({"query": cost_query, "timespan": "P30D"})
-result = subprocess.run(rest_cmd, shell=True, input=query_body, capture_output=True, text=True)
-
-if result.returncode == 0:
-    response_data = json.loads(result.stdout)
-    table = response_data['tables'][0]
-    cols = [col.get("name") for col in table.get('columns')]
-    rows = table.get("rows")
-    df_cost = pd.DataFrame(rows, columns=cols)
-    if df_cost.empty:
-        print("No cost data available yet. Ensure pricing data has been loaded and requests have been made.")
-    else:
-        df_cost['TimeGenerated'] = pd.to_datetime(df_cost['TimeGenerated']).dt.strftime('%Y-%m-%d %H:%M')
-        print(f"\n{'Time':<20} {'Subscription':<30} {'Total Cost ($)':<15}")
-        print(f"{'-'*20} {'-'*30} {'-'*15}")
-        for _, row in df_cost.iterrows():
-            print(f"{row['TimeGenerated']:<20} {row['SubscriptionName']:<30} ${row['TotalCost']:<14.6f}")
-        print(f"\n--- Summary ---")
-        summary = df_cost.groupby('SubscriptionName')['TotalCost'].sum().reset_index()
-        for _, row in summary.iterrows():
-            print(f"  {row['SubscriptionName']:<30} Total: ${row['TotalCost']:.6f}")
-    utils.print_ok("Cost analysis query succeeded")
-else:
-    utils.print_error(f"Cost analysis query failed: {result.stderr}")

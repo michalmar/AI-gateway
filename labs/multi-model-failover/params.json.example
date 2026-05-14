@@ -2,32 +2,52 @@
     "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
     "contentVersion": "1.0.0.0",
     "parameters": {
+        "projectName": {
+            "value": "ict-apim"
+        },
+        "subprojectName": {
+            "value": "multi-model-failover"
+        },
+        "dcrSubprojectName": {
+            "value": "mf"
+        },
+        "resourceNumber": {
+            "value": "001"
+        },
+        "secondaryResourceNumber": {
+            "value": "002"
+        },
+        "tenantName": {
+            "value": "mpsvcrtest"
+        },
         "apimName": {
-            "value": "<existing-apim-name>"
+            "value": "apim-ict-apim-multi-model-failover-001-mpsvcrtest"
         },
         "lawName": {
-            "value": "<log-analytics-workspace-name>"
+            "value": "log-ict-apim-multi-model-failover-001-mpsvcrtest"
         },
         "lawLocation": {
-            "value": "<azure-region>"
+            "value": "westeurope"
         },
         "appInsightsName": {
-            "value": "<application-insights-name>"
+            "value": "appi-ict-apim-multi-model-failover-001-mpsvcrtest"
         },
         "appInsightsLocation": {
-            "value": "<azure-region>"
+            "value": "westeurope"
         },
         "aiServicesConfig": {
             "value": [
                 {
                     "name": "foundry1",
                     "location": "swedencentral",
-                    "priority": 1
+                    "priority": 1,
+                    "resourceNumber": "001"
                 },
                 {
                     "name": "foundry2",
                     "location": "eastus2",
-                    "priority": 2
+                    "priority": 2,
+                    "resourceNumber": "002"
                 }
             ]
         },
@@ -147,9 +167,6 @@
         },
         "inferenceAPIType": {
             "value": "AzureOpenAI"
-        },
-        "foundryProjectName": {
-            "value": "multi-model-failover"
         }
     }
 }

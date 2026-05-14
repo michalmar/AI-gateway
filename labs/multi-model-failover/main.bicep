@@ -2,32 +2,52 @@
 //    PARAMETERS
 // ------------------
 
+@description('Project segment used in resource names.')
+param projectName string = 'ict-apim'
+
+@description('Subproject segment used in resource names.')
+param subprojectName string = 'multi-model-failover'
+
+@description('Short subproject segment used for Direct Data Collection Rules, which have a 30-character name limit.')
+param dcrSubprojectName string = 'mf'
+
+@description('Primary three-digit instance number segment used in resource names.')
+param resourceNumber string = '001'
+
+@description('Secondary three-digit instance number segment used when two resources of the same type are created.')
+param secondaryResourceNumber string = '002'
+
+@description('Tenant segment used in resource names.')
+param tenantName string = 'mpsvcrtest'
+
 @description('Name of existing APIM instance (must have system-assigned managed identity enabled)')
-param apimName string = 'apim-${uniqueString(subscription().id, resourceGroup().id)}'
+param apimName string = 'apim-${projectName}-${subprojectName}-${resourceNumber}-${tenantName}'
 
 @description('Name of the Log Analytics Workspace to create')
-param lawName string = 'workspace-${uniqueString(subscription().id, resourceGroup().id)}'
+param lawName string = 'log-${projectName}-${subprojectName}-${resourceNumber}-${tenantName}'
 
 @description('Location of the Log Analytics Workspace')
 param lawLocation string = resourceGroup().location
 
 @description('Name of the Application Insights instance to create')
-param appInsightsName string = 'insights-${uniqueString(subscription().id, resourceGroup().id)}'
+param appInsightsName string = 'appi-${projectName}-${subprojectName}-${resourceNumber}-${tenantName}'
 
 @description('Location of the Application Insights instance')
 param appInsightsLocation string = resourceGroup().location
 
-@description('AI Foundry accounts to create. Each entry: name (APIM backend id), location, priority. Optional: resourceName (Azure resource name, defaults to name-suffix).')
+@description('AI Foundry accounts to create. Each entry: name (APIM backend id), location, priority. Optional: resourceName (Azure resource name, defaults to the standard naming convention).')
 param aiServicesConfig array = [
   {
     name: 'foundry1'
     location: 'swedencentral'
     priority: 1
+    resourceNumber: resourceNumber
   }
   {
     name: 'foundry2'
     location: 'eastus2'
     priority: 2
+    resourceNumber: secondaryResourceNumber
   }
 ]
 
@@ -141,12 +161,19 @@ param apimProductsConfig array = [
 ]
 param inferenceAPIType string = 'AzureOpenAI'
 param inferenceAPIPath string = 'inference'
-param foundryProjectName string = 'multi-model-failover'
+@description('Optional legacy prefix for AI Foundry project names. Leave empty to use the standard naming convention.')
+param foundryProjectName string = ''
 
 // ------------------
 //    VARIABLES
 // ------------------
-var resourceSuffix = uniqueString(subscription().id, resourceGroup().id)
+var primaryNameSuffix = '${projectName}-${subprojectName}-${resourceNumber}-${tenantName}'
+var secondaryNameSuffix = '${projectName}-${subprojectName}-${secondaryResourceNumber}-${tenantName}'
+var primaryDcrNameSuffix = '${projectName}-${dcrSubprojectName}-${resourceNumber}-${tenantName}'
+var secondaryDcrNameSuffix = '${projectName}-${dcrSubprojectName}-${secondaryResourceNumber}-${tenantName}'
+// Existing APIM identity must be resolved through ARM reference; symbolic access does not include identity at runtime.
+#disable-next-line use-resource-symbol-reference
+var apimPrincipalId = reference(resourceId('Microsoft.ApiManagement/service', apimName), '2024-06-01-preview', 'Full').identity.principalId
 
 // ------------------
 //    EXISTING RESOURCES
@@ -198,8 +225,13 @@ module foundryModule './modules/cognitive-services/v3/foundry.bicep' = {
     aiServicesConfig: aiServicesConfig
     modelsConfig: modelsConfig
     lawId: lawModule.outputs.id
-    apimPrincipalId: apim.identity.principalId
+    apimPrincipalId: apimPrincipalId
     foundryProjectName: foundryProjectName
+    projectName: projectName
+    subprojectName: subprojectName
+    resourceNumber: resourceNumber
+    secondaryResourceNumber: secondaryResourceNumber
+    tenantName: tenantName
     appInsightsId: appInsightsModule.outputs.id
     appInsightsInstrumentationKey: appInsightsModule.outputs.instrumentationKey
   }
@@ -320,7 +352,7 @@ resource pricingTable 'Microsoft.OperationalInsights/workspaces/tables@2023-09-0
 
 // Data Collection Rule for pricing data ingestion
 resource pricingDCR 'Microsoft.Insights/dataCollectionRules@2023-03-11' = {
-  name: 'dcr-pricing-${resourceSuffix}'
+  name: 'dcr-${primaryDcrNameSuffix}'
   location: resourceGroup().location
   kind: 'Direct'
   properties: {
@@ -411,7 +443,7 @@ resource subscriptionQuotaTable 'Microsoft.OperationalInsights/workspaces/tables
 
 // Data Collection Rule for subscription quota data ingestion
 resource subscriptionQuotaDCR 'Microsoft.Insights/dataCollectionRules@2023-03-11' = {
-  name: 'dcr-quota-${resourceSuffix}'
+  name: 'dcr-${secondaryDcrNameSuffix}'
   location: resourceGroup().location
   kind: 'Direct'
   properties: {
@@ -468,7 +500,7 @@ resource subscriptionQuotaDCRRoleAssignment 'Microsoft.Authorization/roleAssignm
 
 // Azure Monitor Workbook - Cost Analysis
 resource openAIUsageWorkbook 'Microsoft.Insights/workbooks@2022-04-01' = {
-  name: guid(resourceGroup().id, resourceSuffix, 'costAnalysis')
+  name: guid(resourceGroup().id, primaryNameSuffix, 'costAnalysis')
   location: resourceGroup().location
   kind: 'shared'
   properties: {
@@ -540,7 +572,7 @@ resource apimSubscriptions 'Microsoft.ApiManagement/service/subscriptions@2024-0
 // ------------------
 
 resource updateSubscriptionWorkflow 'Microsoft.Logic/workflows@2019-05-01' = {
-  name: 'la-update-sub-${resourceSuffix}'
+  name: 'logic-${primaryNameSuffix}'
   location: resourceGroup().location
   identity: {
     type: 'SystemAssigned'
@@ -680,7 +712,7 @@ resource apimRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01'
 }
 
 resource actionGroupUpdateSub 'microsoft.insights/actionGroups@2024-10-01-preview' = {
-  name: 'actiongroup-update-sub-${resourceSuffix}'
+  name: 'ag-${primaryNameSuffix}'
   location: 'Global'
   properties: {
     groupShortName: 'Update Sub'
@@ -707,7 +739,7 @@ resource actionGroupUpdateSub 'microsoft.insights/actionGroups@2024-10-01-previe
 }
 
 resource ruleSuspendSub 'microsoft.insights/scheduledqueryrules@2025-01-01-preview' = {
-  name: 'alert-suspend-sub-${resourceSuffix}'
+  name: 'alert-${primaryNameSuffix}'
   location: 'westeurope'
   kind: 'LogAlert'
   properties: {
@@ -755,10 +787,16 @@ resource ruleSuspendSub 'microsoft.insights/scheduledqueryrules@2025-01-01-previ
       actionProperties: {}
     }
   }
+  dependsOn: [
+    pricingTable
+    pricingDCR
+    subscriptionQuotaTable
+    subscriptionQuotaDCR
+  ]
 }
 
 resource ruleActivateSub 'microsoft.insights/scheduledqueryrules@2025-01-01-preview' = {
-  name: 'alert-activate-sub-${resourceSuffix}'
+  name: 'alert-${secondaryNameSuffix}'
   location: 'westeurope'
   kind: 'LogAlert'
   properties: {
@@ -806,6 +844,12 @@ resource ruleActivateSub 'microsoft.insights/scheduledqueryrules@2025-01-01-prev
       actionProperties: {}
     }
   }
+  dependsOn: [
+    pricingTable
+    pricingDCR
+    subscriptionQuotaTable
+    subscriptionQuotaDCR
+  ]
 }
 
 // ------------------

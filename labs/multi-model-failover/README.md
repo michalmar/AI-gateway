@@ -64,6 +64,12 @@ python3 load-test.py --mode quota --concurrency 5
 python3 verify-scenarios.py --timespan PT1H
 ```
 
+**Telemetry Query** (`multi-model-test-query.py`):
+
+```bash
+python3.12 multi-model-test-query.py
+```
+
 Queries Log Analytics and generates `scenario-report.md` with charts covering 5 scenarios:
 
 | # | Scenario | What it verifies |
@@ -118,54 +124,77 @@ For PTU/PayGo spillover, use identical model deployment names on both Foundry ac
 
 ### Resource naming
 
-By default, resources are named with a deterministic suffix:
+By default, created Azure resources use this naming convention:
 
 ```text
-<prefix>-<resourceSuffix>
+<resource abbreviation>-<projectName>-<subprojectName>-<number>-<tenantName>
 ```
 
-`resourceSuffix` is calculated from the subscription and resource group:
+The default naming parameters are:
 
-```bicep
-uniqueString(subscription().id, resourceGroup().id)
-```
+| Parameter | Default |
+|-----------|---------|
+| `projectName` | `ict-apim` |
+| `subprojectName` | `multi-model-failover` |
+| `dcrSubprojectName` | `mf` |
+| `resourceNumber` | `001` |
+| `secondaryResourceNumber` | `002` |
+| `tenantName` | `mpsvcrtest` |
 
 Default names:
 
 | Resource | Default name |
 |----------|--------------|
-| Log Analytics | `workspace-<resourceSuffix>` |
-| Application Insights | `insights-<resourceSuffix>` |
-| Foundry account 1 | `foundry1-<resourceSuffix>` |
-| Foundry account 2 | `foundry2-<resourceSuffix>` |
-| Foundry project 1 | `<foundryProjectName>-foundry1` |
-| Foundry project 2 | `<foundryProjectName>-foundry2` |
+| Log Analytics | `log-ict-apim-multi-model-failover-001-mpsvcrtest` |
+| Application Insights | `appi-ict-apim-multi-model-failover-001-mpsvcrtest` |
+| Foundry account 1 | `aif-ict-apim-multi-model-failover-001-mpsvcrtest` |
+| Foundry account 2 | `aif-ict-apim-multi-model-failover-002-mpsvcrtest` |
+| Foundry project 1 | `proj-ict-apim-multi-model-failover-001-mpsvcrtest` |
+| Foundry project 2 | `proj-ict-apim-multi-model-failover-002-mpsvcrtest` |
+| Pricing DCR | `dcr-ict-apim-mf-001-mpsvcrtest` |
+| Subscription quota DCR | `dcr-ict-apim-mf-002-mpsvcrtest` |
+| Logic App | `logic-ict-apim-multi-model-failover-001-mpsvcrtest` |
+| Action group | `ag-ict-apim-multi-model-failover-001-mpsvcrtest` |
+| Suspend subscription alert | `alert-ict-apim-multi-model-failover-001-mpsvcrtest` |
+| Activate subscription alert | `alert-ict-apim-multi-model-failover-002-mpsvcrtest` |
 | APIM backend IDs | `foundry1`, `foundry2` |
 
-To use your own names, set them in `params.json` or `params.json.example`:
+To use your own names, set the naming parameters in `params.json` or `params.json.example`:
 
 ```json
 {
   "parameters": {
-    "lawName": {
-      "value": "my-law"
+    "projectName": {
+      "value": "ict-apim"
     },
-    "appInsightsName": {
-      "value": "my-appinsights"
+    "subprojectName": {
+      "value": "multi-model-failover"
+    },
+    "dcrSubprojectName": {
+      "value": "mf"
+    },
+    "resourceNumber": {
+      "value": "001"
+    },
+    "secondaryResourceNumber": {
+      "value": "002"
+    },
+    "tenantName": {
+      "value": "mpsvcrtest"
     },
     "aiServicesConfig": {
       "value": [
         {
           "name": "foundry1",
-          "resourceName": "my-foundry-ptu",
           "location": "swedencentral",
-          "priority": 1
+          "priority": 1,
+          "resourceNumber": "001"
         },
         {
           "name": "foundry2",
-          "resourceName": "my-foundry-paygo",
           "location": "eastus2",
-          "priority": 2
+          "priority": 2,
+          "resourceNumber": "002"
         }
       ]
     }
@@ -173,7 +202,7 @@ To use your own names, set them in `params.json` or `params.json.example`:
 }
 ```
 
-`name` is the logical APIM backend ID and must match `modelsConfig[*].aiservice`; `resourceName` is the actual Azure AI Foundry account name.
+`name` is the logical APIM backend ID and must match `modelsConfig[*].aiservice`; optional `resourceName` can still override the actual Azure AI Foundry account name.
 
 ### 🚀 Get started
 
